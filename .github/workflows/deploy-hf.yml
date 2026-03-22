@@ -1,4 +1,4 @@
-name: Deploy to HF Spaces Now
+name: Deploy to HF Spaces
 
 on:
   push:
@@ -9,19 +9,30 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
-      - name: Configure git
+      - name: Verify HF_TOKEN secret is set
         run: |
-          git config user.email "deploy@glbstudio.dev"
-          git config user.name "GLB Studio Deploy"
+          if [ -z "${{ secrets.HF_TOKEN }}" ]; then
+            echo "ERROR: HF_TOKEN secret is not set."
+            echo "Go to: github.com/varunmulay-droid/glb-studio/settings/secrets/actions"
+            echo "Add secret named HF_TOKEN with your Hugging Face write token."
+            exit 1
+          fi
+          echo "HF_TOKEN found."
 
-      - name: Push to Hugging Face
+      - name: Push to Hugging Face Spaces
         run: |
-          SPACE_URL="https://varunm2004:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/varunm2004/glb-studio"
-          git remote add hfspace "$SPACE_URL" 2>/dev/null || \
-          git remote set-url hfspace "$SPACE_URL"
+          git config --global user.email "deploy@glbstudio.dev"
+          git config --global user.name  "GLB Studio Deploy"
+          git remote add hfspace \
+            "https://varunm2004:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/varunm2004/glb-studio" \
+            2>/dev/null || \
+          git remote set-url hfspace \
+            "https://varunm2004:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/varunm2004/glb-studio"
           git push hfspace HEAD:main --force
-          echo "✅ Live at: https://huggingface.co/spaces/varunm2004/glb-studio"
+          echo "Deployed to https://huggingface.co/spaces/varunm2004/glb-studio"
