@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>GLB Animation Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+  body { background: #080810; color: #fff; font-family: 'Space Mono', monospace; }
+  input[type=range] { accent-color: #00f5ff; cursor: pointer; }
+  input[type=number], input[type=text] { outline: none; }
+  select { outline: none; cursor: pointer; }
+  button { outline: none; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
+  ::-webkit-scrollbar-thumb { background: rgba(0,245,255,0.25); border-radius: 2px; }
+  * { -webkit-tap-highlight-color: transparent; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+</style>
+</head>
+<body>
+<div id="root">
+  <div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:16px;">
+    <div style="font-family:Orbitron,monospace;font-size:28px;font-weight:900;color:#00f5ff;text-shadow:0 0 30px rgba(0,245,255,0.6);letter-spacing:0.1em;">
+      GLB<span style="color:#ff4080">STUDIO</span>
+    </div>
+    <div style="color:#00f5ff;font-size:13px;animation:pulse 1.5s ease infinite;letter-spacing:0.2em;">LOADING ENGINE...</div>
+  </div>
+</div>
+
+<!-- Three.js + React via CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script type="module">
+// ─── Minimal Zustand-like store ──────────────────────────────────────────────
+const { useState, useEffect, useRef, useCallback, useMemo, Suspense, createContext, useContext } = React;
+
+function createStore(initializer) {
+  let state;
+  const listeners = new Set();
+  const getState = () => state;
+  const setState = (updater) => {
+    const next = typeof updater === 'function' ? updater(state) : updater;
+    state = { ...state, ...next };
+    listeners.forEach(l => l(state));
+  };
+  state = initializer(setState, getState);
+  const useStore = (selector = s => s) => {
+    const [, setTick] = useState(0);
+    const sel = useRef(selector);
+    sel.current = selector;
+    const prev = useRef(selector(state));
+    useEffect(() => {
+      const listener = (s) => {
+        const next = sel.current(s);
+        if (next !== prev.current) { prev.current = next; setTick(t => t + 1); }
+      };
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }, []);
+    return selector(state);
+  };
+  useStore.getState = getState;
+  useStore.setState = setState;
+  return useStore;
+}
+
+// ─── Store ────────────────────────────────────────────────────────────────────
+const uid = () => Math.random().toString(36).substr(2, 9);
+
+const useStore = createStore((set, get) => ({
+  models: [],
+  selectedModelId: null,
+  transformMode: 'translate',
+  totalFrames: 300,
+  currentFrame: 0,
+  fps: 30,
+  isPlaying: false,
+  keyframes: {},
+  lightingPreset: 'studio',
+  activePanel: 'models',
+  showTimeline: true,
+  isExporting: false,
+  exportProgress: 0,
+  exportedVideoUrl: null,
+
+  addModel: (url, name) => {
+    const id = uid();
+    const model = {
+      id, url, name: name || url.split('/').pop().split('?')[0],
+      position: [0,0,0], rotation: [0,0,0], scale: [1,1,1],
+      visible: true, animations: [], activeAnimation: null,
+      animationSpeed: 1, animationPlaying: false,
+    };
+    set(s => ({ models: [...s.models, model], selectedModelId: id }));
+    return id;
+  },
+  removeModel: (id) => set(s => ({
+    models: s.models.filter(m => m.id !== id),
+    selectedModelId: s.selectedModelId === id ? null : s.selectedModelId,
+  })),
+  selectModel: (id) => set(() => ({ selectedModelId: id })),
+  updateModelTransform: (id, type, value) => set(s => ({
+    models: s.models.map(m => m.id === id ? { ...m, [type]: value } : m)
+  })),
+  setModelAnimations: (id, anims) => set(s => ({
+    models: s.models.map(m => m.id === id ? { ...m, animations: anims, activeAnimation: anims[0] || null } : m)
+  })),
+  setModelActiveAnimation: (id, anim) => set(s => ({
+    models: s.models.map(m => m.id === id ? { ...m, activeAnimation: anim } : m)
+  })),
+  setModelAnimSpeed: (id, speed) => set(s => ({
+    models: s.models.map(m => m.id === id ? { ...m, animationSpeed: speed } : m)
+  })),
+  toggleModelVisibility: (id) => set(s => ({
+    models: s.models.map(m => m.id === id ? { ...m, visible: !m.visible } : m)
+  })),
+
+  setTransformMode: (mode) => set(() => ({ transformMode: mode })),
+  setCurrentFrame: (f) => set(s => ({ currentFrame: Math.max(0, Math.min(f, s.totalFrames - 1)) })),
+  setIsPlaying: (v) => set(() => ({ isPlaying: v })),
+  setTotalFrames: (v) => set(() => ({ totalFrames: v })),
+  setLightingPreset: (p) => set(() => ({ lightingPreset: p })),
+  setActivePanel: (p) => set(() => ({ activePanel: p })),
+  setShowTimeline: (v) => set(() => ({ showTimeline: v })),
+  setIsExporting: (v) => set(() => ({ isExporting: v })),
+  setExportProgress: (v) => set(() => ({ exportProgress: v })),
+  setExportedVideoUrl: (url) => set(() => ({ exportedVideoUrl: url })),
+
+  addKeyframe: (frame, modelId) => {
+    const s = get();
+    const model = s.models.find(m => m.id === modelId);
+    if (!model) return;
+    const kf = {
+      ...s.keyframes,
+      [frame]: {
+        ...(s.keyframes[frame] || {}),
+        [modelId]: {
+          position: [...model.position],
+          rotation: [...model.rotation],
+          scale: [...model.scale],
+          animation: model.activeAnimation,
+          animationSpeed: model.animationSpeed,
+        }
+      }
+    };
+    set(() => ({ keyframes: kf }));
+  },
+  removeKeyframe: (frame, modelId) => set(s => {
+    const kf = { ...s.keyframes };
+    if (kf[frame]) {
+      kf[frame] = { ...kf[frame] };
+      delete kf[frame][modelId];
+      if (!Object.keys(kf[frame]).length) delete kf[frame];
+    }
+    return { keyframes: kf };
+  }),
+  moveKeyframe: (oldFrame, newFrame, modelId) => set(s => {
+    if (!s.keyframes[oldFrame]?.[modelId]) return {};
+    const kf = JSON.parse(JSON.stringify(s.keyframes));
+    const data = kf[oldFrame][modelId];
+    delete kf[oldFrame][modelId];
+    if (!Object.keys(kf[oldFrame]).length) delete kf[oldFrame];
+    if (!kf[newFrame]) kf[newFrame] = {};
+    kf[newFrame][modelId] = data;
+    return { keyframes: kf };
+  }),
+
+  getKeyframesForModel: (modelId) => {
+    const { keyframes } = get();
+    return Object.entries(keyframes)
+      .filter(([, kf]) => kf[modelId])
+      .map(([f, kf]) => ({ frame: parseInt(f), data: kf[modelId] }))
+      .sort((a, b) => a.frame - b.frame);
+  },
+
+  interpolateAtFrame: (modelId, frame) => {
+    const { keyframes } = get();
+    const allFrames = Object.keys(keyframes).map(Number).sort((a,b) => a-b);
+    const mf = allFrames.filter(f => keyframes[f]?.[modelId]);
+    if (!mf.length) return null;
+    const before = mf.filter(f => f <= frame);
+    const after = mf.filter(f => f > frame);
+    if (!before.length) return keyframes[mf[0]][modelId];
+    if (!after.length) return keyframes[mf[mf.length-1]][modelId];
+    const f0 = before[before.length-1], f1 = after[0];
+    const t = (frame - f0) / (f1 - f0);
+    const k0 = keyframes[f0][modelId], k1 = keyframes[f1][modelId];
+    const lerp = (a,b,t) => a + (b-a)*t;
+    const lerpArr = (a,b,t) => a.map((v,i) => lerp(v, b[i], t));
+    return {
+      position: lerpArr(k0.position, k1.position, t),
+      rotation: lerpArr(k0.rotation, k1.rotation, t),
+      scale: lerpArr(k0.scale, k1.scale, t),
+      animation: t < 0.5 ? k0.animation : k1.animation,
+    };
+  },
+}));
+
+// ─── Three.js Canvas Scene ─────────────────────────────────────────────────
+// We implement a custom R3F-lite approach using Three.js directly
+
+class ThreeScene {
+  constructor(container) {
+    this.container = container;
+    this.models = new Map(); // id -> { group, mixer, actions }
+    this.animFrameId = null;
+    this.clock = new THREE.Clock();
+    this.init();
+  }
+
+  init() {
+    const W = this.container.clientWidth, H = this.container.clientHeight;
+
+    // Renderer
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true, alpha: false,
+      preserveDrawingBuffer: true,
+    });
+    this.renderer.setSize(W, H);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.2;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace || 'srgb';
+    this.container.appendChild(this.renderer.domElement);
+
+    // Scene
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x080810);
+    this.scene.fog = new THREE.FogExp2(0x080810, 0.02);
+
+    // Camera
+    this.camera = new THREE.PerspectiveCamera(50, W/H, 0.01, 1000);
+    this.camera.position.set(5, 3, 5);
+    this.camera.lookAt(0, 0, 0);
+
+    // Grid
+    const grid = new THREE.GridHelper(30, 30, 0x1a1a3a, 0x111128);
+    grid.material.opacity = 0.6;
+    grid.material.transparent = true;
+    this.scene.add(grid);
+
+    // Floor
+    const floorGeo = new THREE.PlaneGeometry(50, 50);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x0d0d1a, roughness: 0.9, metalness: 0.1 });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -0.001;
+    floor.receiveShadow = true;
+    this.scene.add(floor);
+
+    // Lights
+    this.lights = {};
+    this.setupLights('studio');
+
+    // Controls (custom orbit)
+    this.setupOrbitControls();
+
+    // Raycaster for selection
+    this.raycaster = new THREE.Raycaster();
+    this.mouse = new THREE.Vector2();
+    this.container.addEventListener('click', this.onSceneClick.bind(this), false);
+
+    // Resize observer
+    this.ro = new ResizeObserver(() => this.onResize());
+    this.ro.observe(this.container);
+
+    this.render();
+  }
+
+  setupLights(preset) {
+    // Remove old lights
+    Object.values(this.lights).forEach(l => this.scene.remove(l));
+    this.lights = {};
+
+    const configs = {
+      studio: { amb: [0x1a1a2e, 0.4], key: [0xfff5e0, 2, [5,8,3]], fill: [0xc0d8ff, 0.6, [-4,4,-2]], rim: [0xffefcc, 0.8, [0,6,-6]] },
+      outdoor: { amb: [0xb0c8ff, 0.6], key: [0xfff8e1, 3, [10,20,5]], fill: [0xd0e8ff, 0.4, [-8,5,-3]], rim: [0x90b8ff, 0.3, [0,8,-8]] },
+      dramatic: { amb: [0x0a0a1a, 0.1], key: [0xff6020, 4, [3,10,2]], fill: [0x200840, 0.2, [-6,2,-2]], rim: [0x8040ff, 1.2, [0,4,-8]] },
+      neon: { amb: [0x0a0020, 0.15], key: [0x00ffff, 2, [5,6,3]], fill: [0xff00aa, 1.5, [-5,3,-3]], rim: [0xaaff00, 1, [0,8,-6]] },
+    };
+    const cfg = configs[preset] || configs.studio;
+
+    const amb = new THREE.AmbientLight(cfg.amb[0], cfg.amb[1]);
+    this.scene.add(amb); this.lights.amb = amb;
+
+    const key = new THREE.DirectionalLight(cfg.key[0], cfg.key[1]);
+    key.position.set(...cfg.key[2]);
+    key.castShadow = true;
+    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.camera.near = 0.1; key.shadow.camera.far = 100;
+    key.shadow.camera.left = key.shadow.camera.bottom = -20;
+    key.shadow.camera.right = key.shadow.camera.top = 20;
+    this.scene.add(key); this.lights.key = key;
+
+    const fill = new THREE.DirectionalLight(cfg.fill[0], cfg.fill[1]);
+    fill.position.set(...cfg.fill[2]); this.scene.add(fill); this.lights.fill = fill;
+
+    const rim = new THREE.DirectionalLight(cfg.rim[0], cfg.rim[1]);
+    rim.position.set(...cfg.rim[2]); this.scene.add(rim); this.lights.rim = rim;
+  }
+
+  setupOrbitControls() {
+    const canvas = this.renderer.domElement;
+    let isDragging = false, lastX = 0, lastY = 0;
+    let isRightClick = false;
+    let spherical = { theta: Math.PI / 4, phi: Math.PI / 3, radius: 7 };
+    let target = new THREE.Vector3(0, 0, 0);
+
+    const updateCamera = () => {
+      const x = spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
+      const y = spherical.radius * Math.cos(spherical.phi);
+      const z = spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta);
+      this.camera.position.set(target.x + x, target.y + y, target.z + z);
+      this.camera.lookAt(target);
+    };
+    updateCamera();
+
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+    canvas.addEventListener('mousedown', e => {
+      isDragging = true; lastX = e.clientX; lastY = e.clientY;
+      isRightClick = e.button === 2;
+    });
+    window.addEventListener('mouseup', () => { isDragging = false; });
+    window.addEventListener('mousemove', e => {
+      if (!isDragging) return;
+      const dx = e.clientX - lastX, dy = e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      if (isRightClick) {
+        // Pan
+        const panSpeed = spherical.radius * 0.001;
+        const right = new THREE.Vector3();
+        right.crossVectors(this.camera.getWorldDirection(new THREE.Vector3()), this.camera.up).normalize();
+        target.addScaledVector(right, -dx * panSpeed);
+        target.y += dy * panSpeed;
+      } else {
+        spherical.theta -= dx * 0.008;
+        spherical.phi = Math.max(0.05, Math.min(Math.PI - 0.05, spherical.phi - dy * 0.008));
+      }
+      updateCamera();
+    });
+    canvas.addEventListener('wheel', e => {
+      e.preventDefault();
+      spherical.radius = Math.max(0.5, Math.min(100, spherical.radius * (1 + e.deltaY * 0.001)));
+      updateCamera();
+    }, { passive: false });
+
+    // Touch controls
+    let touches = [], pinchDist = 0;
+    canvas.addEventListener('touchstart', e => {
+      touches = Array.from(e.touches);
+      if (touches.length === 2) pinchDist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+    }, { passive: true });
+    canvas.addEventListener('touchmove', e => {
+      const newTouches = Array.from(e.touches);
+      if (newTouches.length === 1 && touches.length === 1) {
+        const dx = newTouches[0].clientX - touches[0].clientX;
+        const dy = newTouches[0].clientY - touches[0].clientY;
+        spherical.theta -= dx * 0.008;
+        spherical.phi = Math.max(0.05, Math.min(Math.PI - 0.05, spherical.phi - dy * 0.008));
+        updateCamera();
+      } else if (newTouches.length === 2 && touches.length === 2) {
+        const newDist = Math.hypot(newTouches[0].clientX - newTouches[1].clientX, newTouches[0].clientY - newTouches[1].clientY);
+        spherical.radius = Math.max(0.5, Math.min(100, spherical.radius * (pinchDist / newDist)));
+        pinchDist = newDist;
+        updateCamera();
+      }
+      touches = newTouches;
+    }, { passive: true });
+
+    this.updateCamera = updateCamera;
+    this.spherical = spherical;
+    this.orbitTarget = target;
+  }
+
+  onSceneClick(e) {
+    // Convert click to normalized device coords
+    const rect = this.container.getBoundingClientRect();
+    this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+
+    // Collect all meshes
+    const meshes = [];
+    this.models.forEach(({ group }, id) => {
+      group.traverse(child => {
+        if (child.isMesh) { child.userData.modelId = id; meshes.push(child); }
+      });
+    });
+
+    const hits = this.raycaster.intersectObjects(meshes, false);
+    if (hits.length > 0) {
+      useStore.setState({ selectedModelId: hits[0].object.userData.modelId });
+    } else {
+      useStore.setState({ selectedModelId: null });
+    }
+  }
+
+  onResize() {
+    const W = this.container.clientWidth, H = this.container.clientHeight;
+    this.camera.aspect = W / H;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(W, H);
+  }
+
+  loadModel(url, id) {
+    // Use GLTFLoader via dynamic import fallback
+    const loader = new THREE.GLTFLoader ? new THREE.GLTFLoader() : null;
+    if (!loader) {
+      console.warn('GLTFLoader not available via CDN THREE.js r128, using a placeholder cube');
+      this.addPlaceholder(id);
+      return;
+    }
+    loader.load(url,
+      (gltf) => {
+        const group = gltf.scene;
+        group.traverse(child => {
+          if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
+        });
+
+        // Auto-center
+        const box = new THREE.Box3().setFromObject(group);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        if (maxDim > 0) {
+          const scale = 2 / maxDim;
+          group.scale.setScalar(scale);
+          group.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+          useStore.setState({ models: useStore.getState().models.map(m =>
+            m.id === id ? { ...m, scale: [scale,scale,scale], position: [-center.x*scale, -box.min.y*scale, -center.z*scale] } : m
+          )});
+        }
+
+        this.scene.add(group);
+
+        // Animations
+        const mixer = new THREE.AnimationMixer(group);
+        const actions = {};
+        gltf.animations.forEach(clip => {
+          actions[clip.name] = mixer.clipAction(clip);
+        });
+
+        if (gltf.animations.length > 0) {
+          const firstName = gltf.animations[0].name;
+          actions[firstName]?.play();
+          useStore.getState().setModelAnimations(id, gltf.animations.map(a => a.name));
+        }
+
+        this.models.set(id, { group, mixer, actions });
+      },
+      undefined,
+      (err) => {
+        console.error('Failed to load model:', err);
+        this.addPlaceholder(id);
+      }
+    );
+  }
+
+  addPlaceholder(id) {
+    const colors = [0x00f5ff, 0xff4080, 0x40ff80, 0xffaa00, 0xaa40ff];
+    const idx = this.models.size % colors.length;
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    const mat = new THREE.MeshStandardMaterial({ color: colors[idx], roughness: 0.3, metalness: 0.6 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true;
+    const group = new THREE.Group();
+    group.add(mesh);
+    this.scene.add(group);
+    this.models.set(id, { group, mixer: null, actions: {} });
+  }
+
+  removeModel(id) {
+    const entry = this.models.get(id);
+    if (entry) {
+      this.scene.remove(entry.group);
+      this.models.delete(id);
+    }
+  }
+
+  updateModelFromState(model, interpolated) {
+    const entry = this.models.get(model.id);
+    if (!entry) return;
+    const { group, mixer, actions } = entry;
+
+    const data = interpolated || model;
+    group.position.set(...data.position);
+    group.rotation.set(...data.rotation);
+    group.scale.set(...data.scale);
+    group.visible = model.visible;
+
+    // Handle animation
+    if (mixer && model.activeAnimation && actions[model.activeAnimation]) {
+      // Only switch if needed
+      if (!group._activeAnim || group._activeAnim !== model.activeAnimation) {
+        Object.values(actions).forEach(a => a.stop());
+        const action = actions[model.activeAnimation];
+        action.setEffectiveTimeScale(model.animationSpeed);
+        action.play();
+        group._activeAnim = model.activeAnimation;
+      }
+    }
+
+    // Selection indicator
+    if (entry.selectionRing) entry.selectionRing.visible = model.id === useStore.getState().selectedModelId;
+    if (!entry.selectionRing) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.8, 0.03, 8, 32),
+        new THREE.MeshBasicMaterial({ color: 0x00f5ff })
+      );
+      ring.rotation.x = Math.PI / 2;
+      ring.visible = false;
+      group.add(ring);
+      entry.selectionRing = ring;
+    }
+    entry.selectionRing.visible = model.id === useStore.getState().selectedModelId;
+  }
+
+  syncFromStore() {
+    const { models, currentFrame, isPlaying } = useStore.getState();
+    const loadedIds = new Set(this.models.keys());
+
+    models.forEach(model => {
+      if (!this.models.has(model.id)) {
+        this.loadModel(model.url, model.id);
+      } else {
+        const interpolated = useStore.getState().interpolateAtFrame(model.id, currentFrame);
+        this.updateModelFromState(model, interpolated);
+      }
+      loadedIds.delete(model.id);
+    });
+
+    // Remove deleted models
+    loadedIds.forEach(id => this.removeModel(id));
+  }
+
+  render() {
+    this.animFrameId = requestAnimationFrame(() => this.render());
+    const delta = this.clock.getDelta();
+
+    // Update mixers
+    this.models.forEach(({ mixer }) => mixer?.update(delta));
+
+    // Sync from store
+    this.syncFromStore();
+
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  getCanvas() { return this.renderer.domElement; }
+
+  destroy() {
+    if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
+    this.ro?.disconnect();
+    this.renderer.dispose();
+  }
+}
+
+// ─── THREE.GLTFLoader dynamic loading ─────────────────────────────────────────
+// We need to load GLTFLoader which isn't in the base THREE CDN build
+// Load it from another source
+
+const GLTFLoaderScript = document.createElement('script');
+GLTFLoaderScript.src = 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js';
+document.head.appendChild(GLTFLoaderScript);
+const DRACOLoaderScript = document.createElement('script');
+DRACOLoaderScript.src = 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js';
+document.head.appendChild(DRACOLoaderScript);
+
+// ─── React Components ────────────────────────────────────────────────────────
+
+function SceneView() {
+  const containerRef = useRef(null);
+  const threeRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current || threeRef.current) return;
+
+    // Wait for loaders to be available
+    const tryInit = () => {
+      if (!THREE.GLTFLoader) { setTimeout(tryInit, 200); return; }
+      threeRef.current = new ThreeScene(containerRef.current);
+    };
+    setTimeout(tryInit, 300);
+
+    return () => {
+      threeRef.current?.destroy();
+      threeRef.current = null;
+    };
+  }, []);
+
+  // Playback timer
+  const { isPlaying, currentFrame, totalFrames, fps, setCurrentFrame, setIsPlaying } = {
+    isPlaying: useStore(s => s.isPlaying),
+    currentFrame: useStore(s => s.currentFrame),
+    totalFrames: useStore(s => s.totalFrames),
+    fps: useStore(s => s.fps),
+    setCurrentFrame: useStore.getState().setCurrentFrame,
+    setIsPlaying: useStore.getState().setIsPlaying,
+  };
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    const interval = setInterval(() => {
+      const cur = useStore.getState().currentFrame;
+      const tot = useStore.getState().totalFrames;
+      if (cur + 1 >= tot) { setIsPlaying(false); setCurrentFrame(0); }
+      else setCurrentFrame(cur + 1);
+    }, 1000 / fps);
+    return () => clearInterval(interval);
+  }, [isPlaying, fps]);
+
+  return (
+    <div
+      ref={containerRef}
+      style={{ position: 'absolute', inset: 0, background: '#080810' }}
+    />
+  );
+}
+
+// ─── UI Components ────────────────────────────────────────────────────────────
+
+const COLORS = ['#00f5ff','#ff4080','#40ff80','#ffaa00','#aa40ff','#ff8040'];
+const DEG = 180 / Math.PI;
+
+function VecInput({ label, value, onChange, step=0.05, scale=1, decimals=2 }) {
+  const axes = ['X','Y','Z'];
+  const axColors = ['#ff5060','#60ff80','#4080ff'];
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.1em' }}>{label}</div>
+      <div style={{ display: 'flex', gap: 4 }}>
+        {axes.map((ax, i) => (
+          <div key={ax} style={{ flex: 1 }}>
+            <div style={{ fontSize: 9, color: axColors[i], marginBottom: 2 }}>{ax}</div>
+            <input
+              type="number" step={step}
+              value={(value[i] * scale).toFixed(decimals)}
+              onChange={e => {
+                const v = parseFloat(e.target.value) || 0;
+                const arr = [...value]; arr[i] = v / scale; onChange(arr);
+              }}
+              style={{
+                width: '100%', background: 'rgba(255,255,255,0.04)',
+                border: `1px solid ${axColors[i]}44`,
+                color: '#ddd', padding: '5px 4px',
+                borderRadius: 4, fontSize: 11,
+                fontFamily: 'Space Mono', display: 'block',
+              }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PropertiesPanel() {
+  const models = useStore(s => s.models);
+  const selectedId = useStore(s => s.selectedModelId);
+  const currentFrame = useStore(s => s.currentFrame);
+  const keyframes = useStore(s => s.keyframes);
+  const { updateModelTransform, setModelActiveAnimation, setModelAnimSpeed, addKeyframe, removeKeyframe, removeModel, selectModel } = useStore.getState();
+
+  const model = models.find(m => m.id === selectedId);
+  const kfList = selectedId ? useStore.getState().getKeyframesForModel(selectedId) : [];
+  const hasKfNow = keyframes[currentFrame]?.[selectedId];
+
+  if (!model) return (
+    <div style={{ padding: 20, textAlign: 'center', color: '#333', fontSize: 12, lineHeight: 1.8 }}>
+      <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.2 }}>◎</div>
+      Tap a model in the scene to select
+    </div>
+  );
+
+  return (
+    <div style={{ padding: 10, overflow: 'auto', maxHeight: '100%' }}>
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 10, color: '#00f5ff', letterSpacing: '0.15em', marginBottom: 3 }}>SELECTED</div>
+        <div style={{ fontSize: 12, color: '#fff', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis' }}>{model.name}</div>
+      </div>
+      <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.07)', margin: '8px 0' }} />
+
+      <VecInput label="POSITION" value={model.position} step={0.1}
+        onChange={v => updateModelTransform(model.id, 'position', v)} />
+      <VecInput label="ROTATION °" value={model.rotation} step={1} scale={DEG}
+        onChange={v => updateModelTransform(model.id, 'rotation', v)} />
+      <VecInput label="SCALE" value={model.scale} step={0.05}
+        onChange={v => updateModelTransform(model.id, 'scale', v)} />
+
+      {model.animations.length > 0 && <>
+        <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.07)', margin: '8px 0' }} />
+        <div style={{ fontSize: 10, color: '#555', marginBottom: 4, letterSpacing: '0.1em' }}>ANIMATION</div>
+        <select value={model.activeAnimation || ''} onChange={e => setModelActiveAnimation(model.id, e.target.value)}
+          style={{ width: '100%', background: '#0d0d1a', border: '1px solid rgba(255,255,255,0.1)', color: '#ddd', padding: '6px', borderRadius: 4, fontSize: 11, fontFamily: 'Space Mono', marginBottom: 6 }}>
+          {model.animations.map(a => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+          <input type="range" min={0.1} max={3} step={0.1} value={model.animationSpeed}
+            onChange={e => setModelAnimSpeed(model.id, parseFloat(e.target.value))} style={{ flex: 1 }} />
+          <span style={{ color: '#00f5ff', fontSize: 11 }}>{model.animationSpeed.toFixed(1)}x</span>
+        </div>
+      </>}
+
+      <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.07)', margin: '8px 0' }} />
+      <div style={{ fontSize: 10, color: '#555', marginBottom: 6 }}>KEYFRAME @ {currentFrame}</div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+        <button onClick={() => addKeyframe(currentFrame, model.id)} style={{
+          flex: 1, padding: '7px 0',
+          background: hasKfNow ? 'rgba(255,170,0,0.15)' : 'rgba(0,245,255,0.1)',
+          border: `1px solid ${hasKfNow ? '#ffaa00' : '#00f5ff'}`,
+          color: hasKfNow ? '#ffaa00' : '#00f5ff',
+          borderRadius: 5, cursor: 'pointer', fontSize: 11, fontFamily: 'Space Mono',
+        }}>{hasKfNow ? '◆ UPDATE' : '◆ ADD KF'}</button>
+        {hasKfNow && <button onClick={() => removeKeyframe(currentFrame, model.id)} style={{
+          padding: '7px 10px', background: 'rgba(255,64,96,0.1)',
+          border: '1px solid rgba(255,64,96,0.3)', color: '#ff4060',
+          borderRadius: 5, cursor: 'pointer', fontSize: 11,
+        }}>✕</button>}
+      </div>
+
+      {kfList.length > 0 && <>
+        <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>KEYFRAMES ({kfList.length})</div>
+        <div style={{ maxHeight: 100, overflow: 'auto', marginBottom: 8 }}>
+          {kfList.map(({ frame }) => (
+            <div key={frame} onClick={() => useStore.getState().setCurrentFrame(frame)}
+              style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 6px', marginBottom: 2,
+                background: frame === currentFrame ? 'rgba(255,170,0,0.1)' : 'rgba(255,255,255,0.03)',
+                border: `1px solid ${frame === currentFrame ? 'rgba(255,170,0,0.3)' : 'transparent'}`,
+                borderRadius: 4, cursor: 'pointer' }}>
+              <span style={{ fontSize: 11, color: '#aaa' }}>Frame {frame}</span>
+              <button onClick={e => { e.stopPropagation(); removeKeyframe(frame, model.id); }}
+                style={{ background: 'none', border: 'none', color: '#444', cursor: 'pointer', fontSize: 11 }}>✕</button>
+            </div>
+          ))}
+        </div>
+      </>}
+
+      <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.07)', margin: '8px 0' }} />
+      <button onClick={() => { removeModel(model.id); selectModel(null); }} style={{
+        width: '100%', padding: '8px 0',
+        background: 'rgba(255,64,96,0.08)', border: '1px solid rgba(255,64,96,0.3)',
+        color: '#ff4060', borderRadius: 5, cursor: 'pointer', fontSize: 11, fontFamily: 'Space Mono',
+      }}>🗑 REMOVE MODEL</button>
+    </div>
+  );
+}
+
+const SAMPLES = [
+  { name: 'Fox', url: 'https://threejs.org/examples/models/gltf/Fox/glTF/Fox.gltf' },
+  { name: 'Robot', url: 'https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb' },
+  { name: 'Soldier', url: 'https://threejs.org/examples/models/gltf/Soldier.glb' },
+  { name: 'Flamingo', url: 'https://threejs.org/examples/models/gltf/Flamingo.glb' },
+  { name: 'Horse', url: 'https://threejs.org/examples/models/gltf/Horse.glb' },
+  { name: 'Parrot', url: 'https://threejs.org/examples/models/gltf/Parrot.glb' },
+];
+
+function ModelsPanel() {
+  const models = useStore(s => s.models);
+  const selectedId = useStore(s => s.selectedModelId);
+  const [url, setUrl] = useState('');
+  const [name, setName] = useState('');
+  const [showSamples, setShowSamples] = useState(false);
+  const fileRef = useRef();
+  const { addModel, removeModel, selectModel, toggleModelVisibility } = useStore.getState();
+
+  const handleAdd = () => {
+    if (!url.trim()) return;
+    addModel(url.trim(), name.trim() || null);
+    setUrl(''); setName('');
+  };
+
+  return (
+    <div style={{ padding: 10, overflow: 'auto', maxHeight: '100%' }}>
+      <div style={{ fontSize: 10, color: '#555', marginBottom: 6, letterSpacing: '0.1em' }}>ADD MODEL</div>
+      <input value={name} onChange={e => setName(e.target.value)} placeholder="Name (optional)" style={IS} />
+      <input value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => e.key==='Enter' && handleAdd()}
+        placeholder="GLB / GLTF URL..." style={{ ...IS, marginTop: 4 }} />
+      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+        <button onClick={handleAdd} style={PB}>+ URL</button>
+        <button onClick={() => fileRef.current?.click()} style={SB}>📁 FILE</button>
+        <button onClick={() => setShowSamples(!showSamples)} style={{ ...SB, color: showSamples ? '#00f5ff' : '#777' }}>◈ DEMO</button>
+      </div>
+      <input ref={fileRef} type="file" accept=".glb,.gltf" style={{ display: 'none' }}
+        onChange={e => { const f = e.target.files[0]; if(f) addModel(URL.createObjectURL(f), f.name.replace(/\.[^.]+$/,'')); }} />
+
+      {showSamples && <div style={{ marginTop: 8 }}>
+        <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>SAMPLE MODELS</div>
+        {SAMPLES.map(s => (
+          <button key={s.url} onClick={() => { addModel(s.url, s.name); setShowSamples(false); }}
+            style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 3, padding: '6px 8px',
+              background: 'rgba(0,245,255,0.05)', border: '1px solid rgba(0,245,255,0.12)',
+              color: '#9dd', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontFamily: 'Space Mono' }}>
+            ◈ {s.name}
+          </button>
+        ))}
+      </div>}
+
+      <hr style={{ border: 'none', borderTop: '1px solid rgba(255,255,255,0.07)', margin: '8px 0' }} />
+      <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>MODELS ({models.length})</div>
+      {models.length === 0 && <div style={{ color: '#333', fontSize: 11, textAlign: 'center', padding: 16 }}>No models loaded</div>}
+      {models.map((m, i) => {
+        const sel = m.id === selectedId;
+        const c = COLORS[i % COLORS.length];
+        return (
+          <div key={m.id} onClick={() => selectModel(m.id)} style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', marginBottom: 3,
+            background: sel ? `${c}11` : 'rgba(255,255,255,0.03)',
+            border: `1px solid ${sel ? c+'44' : 'rgba(255,255,255,0.06)'}`,
+            borderRadius: 5, cursor: 'pointer',
+          }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: m.visible ? c : '#333', boxShadow: m.visible ? `0 0 6px ${c}` : 'none', flexShrink: 0 }} />
+            <span style={{ flex: 1, fontSize: 11, color: sel ? '#fff' : '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</span>
+            <button onClick={e => { e.stopPropagation(); toggleModelVisibility(m.id); }} style={{ background: 'none', border: 'none', color: m.visible ? '#aaa' : '#333', cursor: 'pointer', fontSize: 12, padding: 2 }}>{m.visible ? '👁' : '🙈'}</button>
+            <button onClick={e => { e.stopPropagation(); removeModel(m.id); }} style={{ background: 'none', border: 'none', color: '#333', cursor: 'pointer', fontSize: 11, padding: 2 }}>✕</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExportPanel() {
+  const isExporting = useStore(s => s.isExporting);
+  const exportProgress = useStore(s => s.exportProgress);
+  const exportedUrl = useStore(s => s.exportedVideoUrl);
+  const totalFrames = useStore(s => s.totalFrames);
+  const fps = useStore(s => s.fps);
+  const { setIsExporting, setExportProgress, setExportedVideoUrl, setCurrentFrame } = useStore.getState();
+
+  const [quality, setQuality] = useState(0.9);
+  const [outFps, setOutFps] = useState(30);
+  const [status, setStatus] = useState('');
+  const cancelRef = useRef(false);
+  const framesRef = useRef([]);
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  const captureFrame = () => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return null;
+    return canvas.toDataURL('image/jpeg', quality);
+  };
+
+  const startExport = async () => {
+    cancelRef.current = false;
+    setIsExporting(true);
+    setExportedVideoUrl(null);
+    framesRef.current = [];
+    setStatus('Capturing frames...');
+
+    for (let f = 0; f < totalFrames; f++) {
+      if (cancelRef.current) break;
+      setCurrentFrame(f);
+      await sleep(1000 / fps + 16);
+      const frame = captureFrame();
+      if (frame) framesRef.current.push(frame);
+      setExportProgress(Math.round((f / totalFrames) * 80));
+    }
+
+    if (!cancelRef.current && framesRef.current.length > 0) {
+      setStatus('Encoding video...');
+      setExportProgress(85);
+      try {
+        const blob = await encode(framesRef.current, outFps);
+        const url = URL.createObjectURL(blob);
+        setExportedVideoUrl(url);
+        setExportProgress(100);
+        setStatus('Done!');
+      } catch(e) { setStatus('Error: ' + e.message); }
+    }
+    setIsExporting(false);
+    setCurrentFrame(0);
+  };
+
+  const encode = (frames, fps) => new Promise((res, rej) => {
+    if (!frames.length) { rej(new Error('No frames')); return; }
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      const stream = canvas.captureStream(fps);
+      const rec = new MediaRecorder(stream, { mimeType: 'video/webm', videoBitsPerSecond: 6_000_000 });
+      const chunks = [];
+      rec.ondataavailable = e => chunks.push(e.data);
+      rec.onstop = () => res(new Blob(chunks, { type: 'video/webm' }));
+      rec.start();
+      let i = 0;
+      const iv = setInterval(() => {
+        if (i >= frames.length) { clearInterval(iv); rec.stop(); return; }
+        const fi = new Image(); fi.onload = () => ctx.drawImage(fi, 0, 0); fi.src = frames[i++];
+        setExportProgress(85 + Math.round((i/frames.length)*14));
+      }, 1000/fps);
+    };
+    img.onerror = rej;
+    img.src = frames[0];
+  });
+
+  return (
+    <div style={{ padding: 10, overflow: 'auto', maxHeight: '100%' }}>
+      <div style={{ fontSize: 10, color: '#555', marginBottom: 10, letterSpacing: '0.1em' }}>EXPORT VIDEO</div>
+
+      <div style={{ background: 'rgba(0,245,255,0.04)', border: '1px solid rgba(0,245,255,0.1)', borderRadius: 5, padding: 10, marginBottom: 10, fontSize: 11, color: '#888', lineHeight: 1.8 }}>
+        <div>Frames: <span style={{ color: '#00f5ff' }}>{totalFrames}</span></div>
+        <div>Duration: <span style={{ color: '#00f5ff' }}>{(totalFrames/fps).toFixed(1)}s</span></div>
+        <div>Format: <span style={{ color: '#00f5ff' }}>WebM VP8</span></div>
+      </div>
+
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>QUALITY</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input type="range" min={0.5} max={1} step={0.05} value={quality} onChange={e => setQuality(+e.target.value)} style={{ flex: 1 }} />
+          <span style={{ color: '#00f5ff', fontSize: 11 }}>{Math.round(quality*100)}%</span>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 10, color: '#555', marginBottom: 4 }}>FPS</div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {[15,24,30].map(f => (
+            <button key={f} onClick={() => setOutFps(f)} style={{
+              flex: 1, padding: '6px 0',
+              background: outFps===f ? 'rgba(0,245,255,0.15)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${outFps===f ? '#00f5ff' : 'rgba(255,255,255,0.1)'}`,
+              color: outFps===f ? '#00f5ff' : '#555',
+              borderRadius: 4, cursor: 'pointer', fontSize: 11, fontFamily: 'Space Mono',
+            }}>{f}</button>
+          ))}
+        </div>
+      </div>
+
+      {isExporting && <div style={{ marginBottom: 10 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+          <span style={{ fontSize: 10, color: '#777' }}>{status}</span>
+          <span style={{ fontSize: 10, color: '#00f5ff' }}>{exportProgress}%</span>
+        </div>
+        <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2 }}>
+          <div style={{ height: '100%', width: `${exportProgress}%`, background: 'linear-gradient(90deg,#00f5ff,#0080ff)', borderRadius: 2, transition: 'width 0.3s' }} />
+        </div>
+      </div>}
+
+      {status && !isExporting && <div style={{ fontSize: 11, color: status.includes('Error') ? '#ff4060' : '#40ff80', marginBottom: 10, padding: '6px 8px', background: 'rgba(255,255,255,0.04)', borderRadius: 4 }}>{status}</div>}
+
+      {!isExporting
+        ? <button onClick={startExport} style={{ width: '100%', padding: '10px 0', background: 'linear-gradient(135deg,rgba(0,245,255,0.2),rgba(0,128,255,0.2))', border: '1px solid rgba(0,245,255,0.4)', color: '#00f5ff', borderRadius: 5, cursor: 'pointer', fontSize: 12, fontFamily: 'Space Mono', fontWeight: 700, letterSpacing: '0.1em' }}>▶ RENDER & EXPORT</button>
+        : <button onClick={() => { cancelRef.current = true; }} style={{ width: '100%', padding: '10px 0', background: 'rgba(255,64,96,0.1)', border: '1px solid rgba(255,64,96,0.3)', color: '#ff4060', borderRadius: 5, cursor: 'pointer', fontSize: 12, fontFamily: 'Space Mono' }}>⏹ CANCEL</button>
+      }
+
+      {exportedUrl && <div style={{ marginTop: 10 }}>
+        <video src={exportedUrl} controls style={{ width: '100%', borderRadius: 5, marginBottom: 8 }} />
+        <a href={exportedUrl} download={`anim_${Date.now()}.webm`} style={{ display: 'block', padding: '8px 0', background: 'rgba(64,255,128,0.1)', border: '1px solid rgba(64,255,128,0.3)', color: '#40ff80', borderRadius: 5, textAlign: 'center', textDecoration: 'none', fontSize: 11, fontFamily: 'Space Mono' }}>⬇ DOWNLOAD VIDEO</a>
+      </div>}
+    </div>
+  );
+}
+
+function Timeline() {
+  const models = useStore(s => s.models);
+  const keyframes = useStore(s => s.keyframes);
+  const currentFrame = useStore(s => s.currentFrame);
+  const totalFrames = useStore(s => s.totalFrames);
+  const isPlaying = useStore(s => s.isPlaying);
+  const showTimeline = useStore(s => s.showTimeline);
+  const selectedId = useStore(s => s.selectedModelId);
+  const { setCurrentFrame, setIsPlaying, addKeyframe, removeKeyframe, moveKeyframe, setShowTimeline } = useStore.getState();
+
+  const trackAreaRef = useRef();
+  const [trackW, setTrackW] = useState(600);
+
+  useEffect(() => {
+    if (!trackAreaRef.current) return;
+    const ro = new ResizeObserver(e => setTrackW(e[0].contentRect.width));
+    ro.observe(trackAreaRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const scrub = useCallback((clientX) => {
+    if (!trackAreaRef.current) return;
+    const rect = trackAreaRef.current.getBoundingClientRect();
+    const x = clientX - rect.left;
+    setCurrentFrame(Math.round((x / trackW) * totalFrames));
+  }, [trackW, totalFrames]);
+
+  const handlePointerDown = useCallback((e) => {
+    scrub(e.touches ? e.touches[0].clientX : e.clientX);
+    const move = me => scrub(me.touches ? me.touches[0].clientX : me.clientX);
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [scrub]);
+
+  if (!showTimeline) return (
+    <div style={{ position: 'absolute', bottom: 4, left: '50%', transform: 'translateX(-50%)', zIndex: 100 }}>
+      <button onClick={() => setShowTimeline(true)} style={{ background: '#1a1a2e', border: '1px solid #333', color: '#00f5ff', padding: '4px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontFamily: 'Space Mono' }}>SHOW TIMELINE</button>
+    </div>
+  );
+
+  const playheadX = (currentFrame / totalFrames) * trackW;
+
+  return (
+    <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(8,8,20,0.97)', borderTop: '1px solid rgba(0,245,255,0.15)', zIndex: 100, userSelect: 'none' }}>
+      {/* Controls bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <button onClick={() => setCurrentFrame(0)} style={TB}>⏮</button>
+        <button onClick={() => setCurrentFrame(Math.max(0, currentFrame-1))} style={TB}>◀</button>
+        <button onClick={() => setIsPlaying(!isPlaying)} style={{ ...TB, background: isPlaying ? 'rgba(255,64,96,0.2)' : 'rgba(0,245,255,0.15)', borderColor: isPlaying ? '#ff4060' : '#00f5ff', color: isPlaying ? '#ff4060' : '#00f5ff', minWidth: 36 }}>{isPlaying ? '⏸' : '▶'}</button>
+        <button onClick={() => setCurrentFrame(Math.min(totalFrames-1, currentFrame+1))} style={TB}>▶</button>
+        <button onClick={() => setCurrentFrame(totalFrames-1)} style={TB}>⏭</button>
+        <span style={{ color: '#00f5ff', fontSize: 12, fontFamily: 'Space Mono', minWidth: 90 }}>
+          {String(currentFrame).padStart(4,'0')} / {totalFrames}
+        </span>
+        {selectedId && <button onClick={() => addKeyframe(currentFrame, selectedId)} style={{ ...TB, color: '#ffaa00', borderColor: 'rgba(255,170,0,0.4)', background: 'rgba(255,170,0,0.1)' }}>◆ ADD KF</button>}
+        <div style={{ flex: 1 }} />
+        <button onClick={() => setShowTimeline(false)} style={TB}>✕</button>
+      </div>
+
+      {/* Track area */}
+      <div style={{ display: 'flex', maxHeight: 120 }}>
+        {/* Labels */}
+        <div style={{ width: 90, flexShrink: 0, borderRight: '1px solid rgba(255,255,255,0.07)' }}>
+          <div style={{ height: 18, borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '1px 6px', fontSize: 9, color: '#333' }}>TRACKS</div>
+          {models.map((m, i) => (
+            <div key={m.id} style={{ height: 30, display: 'flex', alignItems: 'center', padding: '0 6px', fontSize: 10, color: COLORS[i%COLORS.length], borderBottom: '1px solid rgba(255,255,255,0.04)', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+              ● {m.name.substring(0,7)}
+            </div>
+          ))}
+        </div>
+
+        {/* Scrollable tracks */}
+        <div style={{ flex: 1, overflow: 'auto hidden' }}>
+          {/* Ruler */}
+          <div ref={trackAreaRef} style={{ position: 'relative', height: 18, borderBottom: '1px solid rgba(255,255,255,0.05)', cursor: 'crosshair' }}
+            onPointerDown={handlePointerDown} onTouchStart={e => handlePointerDown(e)}>
+            {Array.from({ length: Math.ceil(totalFrames/10) }, (_, i) => {
+              const f = i*10;
+              return <div key={f} style={{ position: 'absolute', left: (f/totalFrames)*trackW, top: 0, bottom: 0, borderLeft: '1px solid rgba(255,255,255,0.08)', paddingLeft: 2 }}>
+                <span style={{ fontSize: 8, color: '#333', lineHeight: '18px' }}>{f}</span>
+              </div>;
+            })}
+            <div style={{ position: 'absolute', left: playheadX, top: 0, bottom: 0, width: 2, background: '#00f5ff', boxShadow: '0 0 6px #00f5ff', pointerEvents: 'none', zIndex: 10 }} />
+          </div>
+
+          {/* Model tracks */}
+          <div style={{ position: 'relative' }}>
+            {models.map((m, i) => {
+              const c = COLORS[i%COLORS.length];
+              const mKfs = Object.entries(keyframes).filter(([,kf]) => kf[m.id]).map(([f]) => parseInt(f));
+              return (
+                <div key={m.id} style={{ position: 'relative', height: 30, background: m.id===selectedId ? `${c}08` : 'transparent', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 1, background: 'rgba(255,255,255,0.06)' }} />
+                  {mKfs.map(f => {
+                    const x = (f/totalFrames)*trackW;
+                    return (
+                      <div key={f}
+                        title={`Frame ${f} — drag to move, dblclick to delete`}
+                        onDoubleClick={e => { e.stopPropagation(); removeKeyframe(f, m.id); }}
+                        onPointerDown={e => {
+                          e.stopPropagation();
+                          const startX = e.clientX, startF = f;
+                          const move = me => {
+                            const dx = me.clientX - startX;
+                            const df = Math.round((dx/trackW)*totalFrames);
+                            const newF = Math.max(0, Math.min(totalFrames-1, startF+df));
+                            if (newF !== f) moveKeyframe(f, newF, m.id);
+                          };
+                          const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+                          window.addEventListener('pointermove', move);
+                          window.addEventListener('pointerup', up);
+                        }}
+                        style={{ position: 'absolute', left: x-5, top: '50%', transform: 'translateY(-50%)', width: 10, height: 10, background: c, border: '1px solid rgba(255,255,255,0.4)', borderRadius: '50%', cursor: 'grab', zIndex: 10, boxShadow: `0 0 6px ${c}` }}
+                      />
+                    );
+                  })}
+                </div>
+              );
+            })}
+            {/* Playhead */}
+            <div style={{ position: 'absolute', left: playheadX, top: 0, bottom: 0, width: 2, background: 'rgba(0,245,255,0.4)', pointerEvents: 'none', zIndex: 5 }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Toolbar() {
+  const transformMode = useStore(s => s.transformMode);
+  const lightingPreset = useStore(s => s.lightingPreset);
+  const isPlaying = useStore(s => s.isPlaying);
+  const selectedId = useStore(s => s.selectedModelId);
+  const currentFrame = useStore(s => s.currentFrame);
+  const { setTransformMode, setLightingPreset, setIsPlaying, addKeyframe } = useStore.getState();
+
+  return (
+    <div style={{
+      position: 'absolute', top: 0, left: 0, right: 0, zIndex: 200,
+      display: 'flex', alignItems: 'center', gap: 5, padding: '5px 10px',
+      background: 'rgba(8,8,20,0.95)', backdropFilter: 'blur(12px)',
+      borderBottom: '1px solid rgba(0,245,255,0.12)', overflowX: 'auto',
+    }}>
+      <div style={{ fontFamily: 'Orbitron,monospace', fontSize: 12, fontWeight: 900, color: '#00f5ff', letterSpacing: '0.08em', whiteSpace: 'nowrap', textShadow: '0 0 20px rgba(0,245,255,0.4)', marginRight: 4 }}>
+        GLB<span style={{ color: '#ff4080' }}>STUDIO</span>
+      </div>
+      <div style={{ width: 1, height: 18, background: 'rgba(255,255,255,0.1)' }} />
+      {[['translate','✛','Move'],['rotate','↻','Rotate'],['scale','⤡','Scale']].map(([id,icon,label]) => (
+        <button key={id} onClick={() => setTransformMode(id)} title={label} style={{
+          padding: '5px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 13, fontWeight: 'bold',
+          background: transformMode===id ? 'rgba(0,245,255,0.15)' : 'rgba(255,255,255,0.04)',
+          border: `1px solid ${transformMode===id ? '#00f5ff' : 'rgba(255,255,255,0.1)'}`,
+          color: transformMode===id ? '#00f5ff' : '#666', minWidth: 34, textAlign: 'center',
+        }}>{icon}</button>
+      ))}
+      <div style={{ width: 1, height: 18, background: 'rgba(255,255,255,0.1)' }} />
+      <button onClick={() => setIsPlaying(!isPlaying)} style={{ padding: '5px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 13,
+        background: isPlaying ? 'rgba(255,64,96,0.15)' : 'rgba(64,255,128,0.12)',
+        border: `1px solid ${isPlaying ? '#ff4060' : '#40ff80'}`,
+        color: isPlaying ? '#ff4060' : '#40ff80' }}>{isPlaying ? '⏸' : '▶'}</button>
+      <div style={{ width: 1, height: 18, background: 'rgba(255,255,255,0.1)' }} />
+      {[['studio','💡'],['outdoor','☀️'],['dramatic','🎭'],['neon','🌀']].map(([id,icon]) => (
+        <button key={id} onClick={() => setLightingPreset(id)} title={id} style={{ padding: '4px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 13,
+          background: lightingPreset===id ? 'rgba(255,170,0,0.12)' : 'rgba(255,255,255,0.03)',
+          border: `1px solid ${lightingPreset===id ? '#ffaa00' : 'rgba(255,255,255,0.08)'}`,
+          opacity: lightingPreset===id ? 1 : 0.45 }}>{icon}</button>
+      ))}
+      <div style={{ flex: 1 }} />
+      {selectedId && <button onClick={() => addKeyframe(currentFrame, selectedId)} style={{ padding: '5px 10px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontFamily: 'Space Mono',
+        background: 'rgba(255,170,0,0.12)', border: '1px solid rgba(255,170,0,0.4)', color: '#ffaa00', whiteSpace: 'nowrap' }}>◆ KEY</button>}
+    </div>
+  );
+}
+
+const TABS = [
+  { id: 'models', label: 'MODELS', icon: '◈' },
+  { id: 'properties', label: 'PROPS', icon: '⚙' },
+  { id: 'export', label: 'EXPORT', icon: '▶' },
+];
+
+function SidePanel() {
+  const active = useStore(s => s.activePanel);
+  const { setActivePanel } = useStore.getState();
+  return (
+    <div style={{ width: 195, flexShrink: 0, background: 'rgba(8,8,20,0.97)', borderLeft: '1px solid rgba(0,245,255,0.1)', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setActivePanel(t.id)} style={{
+            flex: 1, padding: '7px 4px', background: active===t.id ? 'rgba(0,245,255,0.07)' : 'transparent',
+            border: 'none', borderBottom: `2px solid ${active===t.id ? '#00f5ff' : 'transparent'}`,
+            color: active===t.id ? '#00f5ff' : '#3a3a5a', cursor: 'pointer', fontSize: 9,
+            fontFamily: 'Space Mono', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+          }}>
+            <span style={{ fontSize: 14 }}>{t.icon}</span><span>{t.label}</span>
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        {active==='models' && <ModelsPanel />}
+        {active==='properties' && <PropertiesPanel />}
+        {active==='export' && <ExportPanel />}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const isMobile = window.innerWidth < 600;
+  const active = useStore(s => s.activePanel);
+  const { setActivePanel } = useStore.getState();
+  const showTimeline = useStore(s => s.showTimeline);
+
+  const TOOLBAR_H = 40;
+  const TL_H = showTimeline ? 150 : 30;
+  const MB_H = isMobile ? 46 : 0;
+
+  return (
+    <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', background: '#080810', overflow: 'hidden', fontFamily: 'Space Mono, monospace' }}>
+      <Toolbar />
+      <div style={{ flex: 1, display: 'flex', position: 'relative', marginTop: TOOLBAR_H, marginBottom: TL_H + MB_H }}>
+        {/* Canvas */}
+        <div style={{ flex: 1, position: 'relative' }}>
+          <SceneView />
+          {/* Mobile drawer */}
+          {isMobile && active && (
+            <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 260, background: 'rgba(8,8,20,0.98)', borderTop: '1px solid rgba(0,245,255,0.15)', overflow: 'auto', zIndex: 150, animation: 'fadeIn 0.2s ease' }}>
+              {active==='models' && <ModelsPanel />}
+              {active==='properties' && <PropertiesPanel />}
+              {active==='export' && <ExportPanel />}
+            </div>
+          )}
+        </div>
+        {!isMobile && <SidePanel />}
+      </div>
+
+      {/* Timeline */}
+      <div style={{ position: 'absolute', bottom: MB_H, left: 0, right: isMobile ? 0 : 195, zIndex: 100 }}>
+        <Timeline />
+      </div>
+
+      {/* Mobile tab bar */}
+      {isMobile && (
+        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, display: 'flex', background: 'rgba(8,8,20,0.98)', borderTop: '1px solid rgba(0,245,255,0.1)', zIndex: 200 }}>
+          {TABS.map(t => (
+            <button key={t.id} onClick={() => setActivePanel(active===t.id ? null : t.id)} style={{
+              flex: 1, padding: '7px 4px', background: active===t.id ? 'rgba(0,245,255,0.07)' : 'transparent',
+              border: 'none', borderTop: `2px solid ${active===t.id ? '#00f5ff' : 'transparent'}`,
+              color: active===t.id ? '#00f5ff' : '#444', cursor: 'pointer',
+              fontSize: 9, fontFamily: 'Space Mono', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+            }}>
+              <span style={{ fontSize: 18 }}>{t.icon}</span><span>{t.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Style constants ──────────────────────────────────────────────────────────
+const IS = { width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#ddd', padding: '6px 8px', borderRadius: 4, fontSize: 11, fontFamily: 'Space Mono,monospace', display: 'block' };
+const PB = { flex: 1, padding: '6px 0', background: 'rgba(0,245,255,0.12)', border: '1px solid rgba(0,245,255,0.3)', color: '#00f5ff', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontFamily: 'Space Mono' };
+const SB = { flex: 1, padding: '6px 0', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#777', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontFamily: 'Space Mono' };
+const TB = { padding: '3px 7px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#888', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontFamily: 'Space Mono' };
+
+// ─── Mount ────────────────────────────────────────────────────────────────────
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
