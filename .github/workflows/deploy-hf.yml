@@ -1,0 +1,27 @@
+name: Deploy to HF Spaces Now
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.email "deploy@glbstudio.dev"
+          git config user.name "GLB Studio Deploy"
+
+      - name: Push to Hugging Face
+        run: |
+          SPACE_URL="https://varunm2004:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/varunm2004/glb-studio"
+          git remote add hfspace "$SPACE_URL" 2>/dev/null || \
+          git remote set-url hfspace "$SPACE_URL"
+          git push hfspace HEAD:main --force
+          echo "✅ Live at: https://huggingface.co/spaces/varunm2004/glb-studio"

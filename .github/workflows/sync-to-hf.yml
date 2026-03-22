@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force redeploy'
+        default: 'true'
 
 jobs:
-  sync-to-hf:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,10 +24,9 @@ jobs:
         run: |
           git config user.email "deploy@glbstudio.dev"
           git config user.name  "GLB Studio Deploy"
-          git remote add hf-space \
+          git remote add space \
             "https://varunm2004:${HF_TOKEN}@huggingface.co/spaces/varunm2004/glb-studio" \
-            2>/dev/null || \
-          git remote set-url hf-space \
-            "https://varunm2004:${HF_TOKEN}@huggingface.co/spaces/varunm2004/glb-studio"
-          git push hf-space main --force
-          echo "✅ https://huggingface.co/spaces/varunm2004/glb-studio"
+            2>/dev/null || true
+          git push space main --force
+          echo ""
+          echo "🎉 Deployed → https://huggingface.co/spaces/varunm2004/glb-studio"
