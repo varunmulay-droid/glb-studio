@@ -122,6 +122,10 @@ const useStore = create(
     lightingPreset: 'studio', // studio | outdoor | dramatic | neon
     setLightingPreset: (p) => set(state => { state.lightingPreset = p }),
 
+    // Skybox: type='preset'|'color'|'image'|'hdr', value=url/color, showBg=bool
+    skybox: { type: 'preset', value: null, bgColor: '#080810', showBg: false },
+    setSkybox: (s) => set(state => { state.skybox = { ...state.skybox, ...s } }),
+
     // ── Camera ───────────────────────────────────────────────────────
     cameraPosition: [5, 3, 5],
     setCameraPosition: (pos) => set(state => { state.cameraPosition = pos }),
