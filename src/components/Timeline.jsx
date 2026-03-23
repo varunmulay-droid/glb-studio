@@ -1,313 +1,244 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import useStore from '../store/useStore'
 
-const FRAME_WIDTH = 4 // px per frame in timeline
-const TRACK_HEIGHT = 32
+const TRACK_H  = 28
+const COLORS   = ['#4f8eff','#ef4444','#22c55e','#f59e0b','#8b5cf6','#f97316']
 
-function KeyframeDot({ frame, modelId, modelColor, timelineWidth, totalFrames, onDragEnd }) {
-  const removeKeyframe = useStore(s => s.removeKeyframe)
-  const moveKeyframe = useStore(s => s.moveKeyframe)
-  const dragging = useRef(false)
-  const startX = useRef(0)
-  const startFrame = useRef(frame)
+function KeyframeDot({ frame, modelId, color, trackW, totalFrames }) {
+  const { moveKeyframe, removeKeyframe } = useStore.getState()
+  const x = (frame / totalFrames) * trackW
 
-  const x = (frame / totalFrames) * timelineWidth
-
-  const handlePointerDown = (e) => {
+  const onPointerDown = (e) => {
     e.stopPropagation()
-    dragging.current = true
-    startX.current = e.clientX
-    startFrame.current = frame
-
-    const handleMove = (me) => {
-      if (!dragging.current) return
-      const dx = me.clientX - startX.current
-      const dFrames = Math.round((dx / timelineWidth) * totalFrames)
-      const newFrame = Math.max(0, Math.min(totalFrames - 1, startFrame.current + dFrames))
-      if (newFrame !== frame) {
-        moveKeyframe(frame, newFrame, modelId)
-        startX.current = me.clientX
-        startFrame.current = newFrame
-      }
+    const startX = e.clientX, startF = frame
+    const move = me => {
+      const dx   = me.clientX - startX
+      const newF = Math.max(0, Math.min(totalFrames-1, Math.round(startF + (dx/trackW)*totalFrames)))
+      if (newF !== frame) moveKeyframe(frame, newF, modelId)
     }
-
-    const handleUp = () => {
-      dragging.current = false
-      window.removeEventListener('pointermove', handleMove)
-      window.removeEventListener('pointerup', handleUp)
-    }
-
-    window.addEventListener('pointermove', handleMove)
-    window.addEventListener('pointerup', handleUp)
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup',   up)
   }
 
   return (
     <div
+      onPointerDown={onPointerDown}
+      onDoubleClick={e => { e.stopPropagation(); removeKeyframe(frame, modelId) }}
+      title={`Frame ${frame} — drag to move, dbl-click to delete`}
       style={{
-        position: 'absolute',
-        left: x - 5,
-        top: '50%',
-        transform: 'translateY(-50%)',
-        width: 10,
-        height: 10,
-        background: modelColor,
-        border: '1px solid rgba(255,255,255,0.5)',
-        borderRadius: '50%',
-        cursor: 'grab',
-        zIndex: 10,
-        boxShadow: `0 0 6px ${modelColor}`,
+        position:'absolute', left: x - 5, top:'50%', transform:'translateY(-50%)',
+        width:10, height:10, borderRadius:2,
+        background: color, cursor:'ew-resize', zIndex:10,
+        boxShadow:`0 0 6px ${color}88`,
+        border:'1px solid rgba(255,255,255,0.3)',
+        rotate:'45deg',
+        transition:'transform 0.1s',
       }}
-      onPointerDown={handlePointerDown}
-      onDoubleClick={(e) => { e.stopPropagation(); removeKeyframe(frame, modelId) }}
-      title={`Frame ${frame} — double click to delete`}
     />
-  )
-}
-
-function TimelineTrack({ model, timelineWidth }) {
-  const totalFrames = useStore(s => s.totalFrames)
-  const keyframes = useStore(s => s.keyframes)
-  const selectedModelId = useStore(s => s.selectedModelId)
-  const selectModel = useStore(s => s.selectModel)
-
-  const modelKeyframes = Object.entries(keyframes)
-    .filter(([, kf]) => kf[model.id])
-    .map(([f]) => parseInt(f))
-
-  const colors = ['#00f5ff', '#ff4080', '#40ff80', '#ffaa00', '#aa40ff', '#ff8040']
-  const colorIndex = useStore(s => s.models).findIndex(m => m.id === model.id) % colors.length
-  const color = colors[colorIndex]
-
-  const isSelected = selectedModelId === model.id
-
-  return (
-    <div
-      style={{
-        position: 'relative',
-        height: TRACK_HEIGHT,
-        width: timelineWidth,
-        background: isSelected ? 'rgba(0,245,255,0.04)' : 'rgba(255,255,255,0.02)',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
-        cursor: 'pointer',
-      }}
-      onClick={() => selectModel(model.id)}
-    >
-      {/* Track bar */}
-      <div style={{
-        position: 'absolute', top: '45%', left: 0, right: 0,
-        height: 2, background: 'rgba(255,255,255,0.08)'
-      }} />
-
-      {modelKeyframes.map(f => (
-        <KeyframeDot
-          key={f} frame={f} modelId={model.id}
-          modelColor={color} timelineWidth={timelineWidth}
-          totalFrames={totalFrames}
-        />
-      ))}
-    </div>
   )
 }
 
 export default function Timeline() {
   const {
-    currentFrame, setCurrentFrame, totalFrames, fps,
-    isPlaying, setIsPlaying,
-    models, selectedModelId, addKeyframe,
-    showTimeline, setShowTimeline,
-    keyframes
+    models, keyframes, currentFrame, totalFrames, fps, isPlaying,
+    setCurrentFrame, setIsPlaying, addKeyframe, selectedModelId,
+    showTimeline, setShowTimeline, setTotalFrames, setFps,
   } = useStore()
 
-  const timelineRef = useRef()
-  const [timelineWidth, setTimelineWidth] = useState(600)
-  const containerRef = useRef()
+  const rulerRef  = useRef()
+  const [trackW, setTrackW] = useState(600)
+  const [settings, setSettings] = useState(false)
 
-  // Observe container width
   const measuredRef = useCallback(node => {
     if (!node) return
-    const ro = new ResizeObserver(entries => {
-      setTimelineWidth(entries[0].contentRect.width)
-    })
+    const ro = new ResizeObserver(e => setTrackW(e[0].contentRect.width))
     ro.observe(node)
     return () => ro.disconnect()
   }, [])
 
-  const scrub = (e) => {
-    if (!containerRef.current) return
-    const rect = containerRef.current.getBoundingClientRect()
-    const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left
-    const frame = Math.round((x / timelineWidth) * totalFrames)
-    setCurrentFrame(Math.max(0, Math.min(frame, totalFrames - 1)))
-  }
+  const scrub = useCallback((clientX) => {
+    const rect = rulerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const x = clientX - rect.left
+    setCurrentFrame(Math.round(Math.max(0, Math.min(totalFrames-1, (x/trackW)*totalFrames))))
+  }, [trackW, totalFrames])
 
-  const handleTimelinePointerDown = (e) => {
-    scrub(e)
-    const move = (me) => scrub(me)
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
+  const handlePointerDown = (e) => {
+    scrub(e.touches ? e.touches[0].clientX : e.clientX)
+    const move = me => scrub(me.touches ? me.touches[0].clientX : me.clientX)
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up) }
     window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    window.addEventListener('pointerup',   up)
   }
 
-  const allKeyframeFrames = Object.keys(keyframes).map(Number)
-  const playheadX = (currentFrame / totalFrames) * timelineWidth
+  const playheadX = (currentFrame / totalFrames) * trackW
+  const duration  = (totalFrames / fps).toFixed(1)
 
-  if (!showTimeline) {
-    return (
-      <button
-        onClick={() => setShowTimeline(true)}
-        style={{
-          position: 'absolute', bottom: 4, left: '50%',
-          transform: 'translateX(-50%)',
-          background: '#1a1a2e', border: '1px solid #333',
-          color: '#00f5ff', padding: '4px 16px',
-          borderRadius: 8, cursor: 'pointer', fontSize: 11,
-          fontFamily: 'Space Mono, monospace'
-        }}
-      >
-        SHOW TIMELINE
-      </button>
-    )
-  }
+  if (!showTimeline) return (
+    <div style={{ position:'absolute', bottom:8, left:'50%', transform:'translateX(-50%)', zIndex:200 }}>
+      <button onClick={() => setShowTimeline(true)} style={{
+        padding:'5px 16px', borderRadius:20, border:'1px solid var(--border-hi)',
+        background:'var(--bg2)', color:'var(--text1)', fontSize:11, cursor:'pointer',
+      }}>Show Timeline</button>
+    </div>
+  )
 
   return (
     <div style={{
-      position: 'absolute', bottom: 0, left: 0, right: 0,
-      background: 'rgba(8,8,20,0.97)',
-      borderTop: '1px solid rgba(0,245,255,0.2)',
-      zIndex: 100,
-      userSelect: 'none',
+      position:'absolute', bottom:0, left:0, right:0,
+      background:'var(--bg1)',
+      borderTop:'1px solid var(--border)',
+      zIndex:200, userSelect:'none',
     }}>
-      {/* Timeline header */}
+      {/* Transport bar */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '6px 10px',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
-        background: 'rgba(0,0,20,0.5)',
+        display:'flex', alignItems:'center', gap:6,
+        padding:'5px 10px',
+        borderBottom:'1px solid var(--border)',
       }}>
-        {/* Transport */}
-        <button onClick={() => setCurrentFrame(0)} style={btnStyle} title="Go to start">⏮</button>
-        <button
-          onClick={() => setCurrentFrame(Math.max(0, currentFrame - 1))}
-          style={btnStyle} title="Previous frame"
-        >◀</button>
-        <button
-          onClick={() => setIsPlaying(!isPlaying)}
-          style={{ ...btnStyle, background: isPlaying ? '#ff4060' : '#00f5ff', color: '#000', minWidth: 40 }}
-        >
-          {isPlaying ? '⏸' : '▶'}
-        </button>
-        <button
-          onClick={() => setCurrentFrame(Math.min(totalFrames - 1, currentFrame + 1))}
-          style={btnStyle} title="Next frame"
-        >▶</button>
-        <button onClick={() => setCurrentFrame(totalFrames - 1)} style={btnStyle} title="Go to end">⏭</button>
+        <button onClick={() => setCurrentFrame(0)} style={tbtn} title="First frame">⏮</button>
+        <button onClick={() => setCurrentFrame(Math.max(0,currentFrame-1))} style={tbtn}>◀</button>
+        <button onClick={() => setIsPlaying(!isPlaying)} style={{
+          ...tbtn,
+          background: isPlaying ? 'var(--danger)' : 'var(--accent)',
+          color:'#fff', minWidth:32,
+          boxShadow: isPlaying ? '0 0 8px rgba(239,68,68,0.4)' : '0 0 8px rgba(79,142,255,0.4)',
+        }}>{isPlaying ? '⏸' : '▶'}</button>
+        <button onClick={() => setCurrentFrame(Math.min(totalFrames-1,currentFrame+1))} style={tbtn}>▶</button>
+        <button onClick={() => setCurrentFrame(totalFrames-1)} style={tbtn}>⏭</button>
 
-        <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.15)' }} />
+        <div style={{ fontFamily:'var(--font-mono)', fontSize:11, color:'var(--text1)',
+          background:'var(--bg3)', padding:'3px 8px', borderRadius:'var(--radius-sm)',
+          border:'1px solid var(--border)', flexShrink:0 }}>
+          <span style={{ color:'var(--text0)', fontWeight:600 }}>{String(currentFrame).padStart(4,'0')}</span>
+          <span style={{ color:'var(--text3)' }}>/{totalFrames}</span>
+        </div>
 
-        {/* Frame counter */}
-        <span style={{ color: '#00f5ff', fontSize: 12, fontFamily: 'Space Mono', minWidth: 80 }}>
-          {String(currentFrame).padStart(4, '0')} / {totalFrames}
-        </span>
+        <span style={{ fontSize:10, color:'var(--text3)' }}>{duration}s</span>
 
-        <span style={{ color: '#666', fontSize: 11 }}>{fps}fps</span>
+        <div style={{ width:1, height:16, background:'var(--border)', margin:'0 2px' }} />
 
-        <div style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.15)' }} />
-
-        {/* Add keyframe button */}
         {selectedModelId && (
           <button
             onClick={() => addKeyframe(currentFrame, selectedModelId)}
             style={{
-              ...btnStyle,
-              background: 'rgba(255,170,0,0.15)',
-              borderColor: '#ffaa00',
-              color: '#ffaa00',
+              ...tbtn,
+              background:'rgba(245,158,11,0.12)',
+              borderColor:'rgba(245,158,11,0.3)',
+              color:'var(--warn)', fontWeight:600,
             }}
-            title="Add keyframe for selected model at current frame"
-          >
-            ◆ ADD KF
-          </button>
+          >◆ Key</button>
         )}
 
-        <div style={{ flex: 1 }} />
-        <button onClick={() => setShowTimeline(false)} style={btnStyle} title="Hide timeline">✕</button>
+        <div style={{ flex:1 }} />
+
+        <button onClick={() => setSettings(!settings)} style={{ ...tbtn, opacity: settings ? 1 : 0.5 }} title="Timeline settings">⚙</button>
+        <button onClick={() => setShowTimeline(false)} style={tbtn} title="Hide timeline">✕</button>
       </div>
 
-      {/* Track labels + scrubber area */}
-      <div style={{ display: 'flex', maxHeight: 120, overflow: 'hidden' }}>
-        {/* Track labels */}
-        <div style={{ width: 100, flexShrink: 0, borderRight: '1px solid rgba(255,255,255,0.08)' }}>
-          <div style={{
-            height: 20, borderBottom: '1px solid rgba(255,255,255,0.06)',
-            padding: '2px 6px', fontSize: 10, color: '#444',
-          }}>TRACKS</div>
-          {models.map((m, i) => {
-            const colors = ['#00f5ff', '#ff4080', '#40ff80', '#ffaa00', '#aa40ff', '#ff8040']
-            const c = colors[i % colors.length]
-            return (
-              <div key={m.id} style={{
-                height: TRACK_HEIGHT, display: 'flex', alignItems: 'center',
-                padding: '0 8px', fontSize: 10, color: c,
-                borderBottom: '1px solid rgba(255,255,255,0.04)',
-                overflow: 'hidden', whiteSpace: 'nowrap',
-              }}>
-                <span style={{ marginRight: 4 }}>●</span>
-                {m.name.substring(0, 8)}
-              </div>
-            )
-          })}
+      {/* Settings row */}
+      {settings && (
+        <div style={{
+          display:'flex', gap:12, padding:'6px 12px',
+          borderBottom:'1px solid var(--border)',
+          background:'var(--bg2)', fontSize:11, color:'var(--text1)',
+          alignItems:'center',
+        }}>
+          <span>Frames:</span>
+          {[120,200,300,500].map(f => (
+            <button key={f} onClick={() => setTotalFrames(f)} style={{
+              ...tbtn, padding:'2px 8px', fontSize:10,
+              background: totalFrames===f ? 'rgba(79,142,255,0.15)' : 'var(--bg3)',
+              borderColor: totalFrames===f ? 'rgba(79,142,255,0.4)' : 'var(--border)',
+              color: totalFrames===f ? 'var(--accent)' : 'var(--text1)',
+            }}>{f}</button>
+          ))}
+          <span style={{ marginLeft:8 }}>FPS:</span>
+          {[24,30,60].map(f => (
+            <button key={f} onClick={() => setFps(f)} style={{
+              ...tbtn, padding:'2px 8px', fontSize:10,
+              background: fps===f ? 'rgba(79,142,255,0.15)' : 'var(--bg3)',
+              borderColor: fps===f ? 'rgba(79,142,255,0.4)' : 'var(--border)',
+              color: fps===f ? 'var(--accent)' : 'var(--text1)',
+            }}>{f}</button>
+          ))}
+        </div>
+      )}
+
+      {/* Track area */}
+      <div style={{ display:'flex', maxHeight:160, overflow:'hidden' }}>
+        {/* Labels */}
+        <div style={{ width:100, flexShrink:0, borderRight:'1px solid var(--border)' }}>
+          <div style={{ height:20, display:'flex', alignItems:'center', padding:'0 8px',
+            borderBottom:'1px solid var(--border)', fontSize:9, color:'var(--text3)', fontWeight:600, letterSpacing:'0.1em' }}>
+            LAYERS
+          </div>
+          {models.map((m,i) => (
+            <div key={m.id} style={{
+              height:TRACK_H, display:'flex', alignItems:'center',
+              padding:'0 8px', gap:6, fontSize:11,
+              color: COLORS[i%COLORS.length],
+              borderBottom:'1px solid var(--border)',
+              overflow:'hidden',
+            }}>
+              <div style={{ width:6, height:6, borderRadius:1, background:COLORS[i%COLORS.length], flexShrink:0, rotate:'45deg' }} />
+              <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontSize:10 }}>
+                {m.name.substring(0,10)}
+              </span>
+            </div>
+          ))}
         </div>
 
-        {/* Scrollable timeline */}
-        <div style={{ flex: 1, overflow: 'auto hidden' }}>
-          {/* Frame ruler */}
-          <div
-            ref={el => { measuredRef(el); containerRef.current = el }}
-            style={{ position: 'relative', height: 20, borderBottom: '1px solid rgba(255,255,255,0.06)', cursor: 'crosshair' }}
-            onPointerDown={handleTimelinePointerDown}
+        {/* Scrollable ruler + tracks */}
+        <div style={{ flex:1, overflow:'auto hidden' }}>
+          {/* Ruler */}
+          <div ref={el => { measuredRef(el); rulerRef.current = el }}
+            style={{ position:'relative', height:20, borderBottom:'1px solid var(--border)',
+              cursor:'crosshair', background:'var(--bg2)' }}
+            onPointerDown={handlePointerDown}
+            onTouchStart={e => handlePointerDown(e)}
           >
-            {Array.from({ length: Math.ceil(totalFrames / 10) }, (_, i) => {
-              const f = i * 10
-              const x = (f / totalFrames) * timelineWidth
+            {Array.from({ length: Math.ceil(totalFrames/10) }, (_,i) => {
+              const f = i*10, x = (f/totalFrames)*trackW
               return (
-                <div key={f} style={{
-                  position: 'absolute', left: x,
-                  top: 0, bottom: 0,
-                  borderLeft: '1px solid rgba(255,255,255,0.1)',
-                  paddingLeft: 2,
-                }}>
-                  <span style={{ fontSize: 8, color: '#444', lineHeight: '20px' }}>{f}</span>
+                <div key={f} style={{ position:'absolute', left:x, top:0, bottom:0,
+                  borderLeft:`1px solid ${f%50===0 ? 'var(--border-hi)' : 'var(--border)'}` }}>
+                  {f%10===0 && <span style={{ fontSize:8, color:'var(--text3)', paddingLeft:2, lineHeight:'20px', pointerEvents:'none' }}>{f}</span>}
                 </div>
               )
             })}
-
-            {/* Playhead on ruler */}
-            <div style={{
-              position: 'absolute', left: playheadX, top: 0, bottom: 0,
-              width: 2, background: '#00f5ff',
-              boxShadow: '0 0 8px #00f5ff',
-              pointerEvents: 'none', zIndex: 20,
-            }} />
+            <div style={{ position:'absolute', left:playheadX, top:0, bottom:0, width:2,
+              background:'var(--accent)', boxShadow:'0 0 6px rgba(79,142,255,0.6)', pointerEvents:'none', zIndex:20 }}>
+              <div style={{ position:'absolute', top:-1, left:-3, width:8, height:8,
+                background:'var(--accent)', borderRadius:'0 0 3px 3px', clipPath:'polygon(50% 0,100% 100%,0 100%)' }} />
+            </div>
           </div>
 
           {/* Tracks */}
-          <div
-            style={{ position: 'relative' }}
-            ref={timelineRef}
-          >
-            {models.map(m => (
-              <TimelineTrack key={m.id} model={m} timelineWidth={timelineWidth} />
-            ))}
-
-            {/* Playhead line across tracks */}
-            <div style={{
-              position: 'absolute', left: playheadX, top: 0, bottom: 0,
-              width: 2, background: 'rgba(0,245,255,0.5)',
-              pointerEvents: 'none', zIndex: 20,
-            }} />
+          <div style={{ position:'relative' }}>
+            {models.map((m,i) => {
+              const c    = COLORS[i%COLORS.length]
+              const mKfs = Object.entries(keyframes).filter(([,kf])=>kf[m.id]).map(([f])=>parseInt(f))
+              return (
+                <div key={m.id} style={{
+                  position:'relative', height:TRACK_H,
+                  background: m.id===selectedModelId ? `${c}08` : 'transparent',
+                  borderBottom:'1px solid var(--border)',
+                }}>
+                  {/* Track line */}
+                  <div style={{ position:'absolute', top:'50%', left:0, right:0,
+                    height:1, background:'var(--border-hi)', opacity:0.5 }} />
+                  {mKfs.map(f => (
+                    <KeyframeDot key={f} frame={f} modelId={m.id}
+                      color={c} trackW={trackW} totalFrames={totalFrames} />
+                  ))}
+                </div>
+              )
+            })}
+            {/* Playhead */}
+            <div style={{ position:'absolute', left:playheadX, top:0, bottom:0,
+              width:1, background:'rgba(79,142,255,0.35)', pointerEvents:'none', zIndex:5 }} />
           </div>
         </div>
       </div>
@@ -315,13 +246,9 @@ export default function Timeline() {
   )
 }
 
-const btnStyle = {
-  background: 'rgba(255,255,255,0.06)',
-  border: '1px solid rgba(255,255,255,0.12)',
-  color: '#ccc',
-  borderRadius: 4,
-  padding: '3px 8px',
-  cursor: 'pointer',
-  fontSize: 12,
-  fontFamily: 'Space Mono, monospace',
+const tbtn = {
+  padding:'4px 8px', borderRadius:'var(--radius-sm)',
+  background:'var(--bg3)', border:'1px solid var(--border)',
+  color:'var(--text1)', fontSize:12, cursor:'pointer', flexShrink:0,
+  transition:'all 0.12s',
 }

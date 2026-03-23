@@ -1,219 +1,176 @@
-/**
- * SkyboxPanel.jsx
- * Lets users set the scene background / skybox:
- *  - Preset environments (synced with lighting)
- *  - Solid color picker
- *  - Upload an image (JPG/PNG equirectangular)
- *  - Paste an HDR/image URL
- * Drop-in component — no other files changed.
- */
 import { useRef, useState } from 'react'
 import useStore from '../store/useStore'
 
 const PRESETS = [
-  { id: 'studio',   label: 'Studio',   icon: '💡', color: '#223' },
-  { id: 'outdoor',  label: 'Outdoor',  icon: '☀️', color: '#135' },
-  { id: 'dramatic', label: 'Dramatic', icon: '🎭', color: '#311' },
-  { id: 'neon',     label: 'Neon',     icon: '🌀', color: '#031' },
+  { id:'studio',   label:'Studio',   icon:'◎' },
+  { id:'outdoor',  label:'Outdoor',  icon:'◉' },
+  { id:'dramatic', label:'Dramatic', icon:'◈' },
+  { id:'neon',     label:'Neon',     icon:'◆' },
 ]
 
-const BG_COLORS = [
-  '#080810','#000000','#ffffff','#1a0a2e',
-  '#0a1a2e','#1a2e0a','#2e0a0a','#2e2a0a',
-]
+const COLORS = ['#0c0c10','#000000','#0a0a1a','#0d1a0a','#1a0a0a','#ffffff','#87ceeb','#1a0a2e']
 
 export default function SkyboxPanel() {
-  const skybox          = useStore(s => s.skybox)
-  const lightingPreset  = useStore(s => s.lightingPreset)
+  const skybox         = useStore(s => s.skybox)
+  const lightingPreset = useStore(s => s.lightingPreset)
   const { setSkybox, setLightingPreset } = useStore.getState()
-
-  const [urlInput, setUrlInput] = useState('')
-  const [urlType,  setUrlType]  = useState('image') // 'image' | 'hdr'
+  const [url,     setUrl]     = useState('')
+  const [urlType, setUrlType] = useState('image')
   const fileRef = useRef()
 
-  const applyPreset = (id) => {
-    setLightingPreset(id)
-    setSkybox({ type: 'preset', value: null, showBg: skybox.showBg })
-  }
-
-  const applyColor = (col) => {
-    setSkybox({ type: 'color', bgColor: col, showBg: true })
+  const handleFile = (e) => {
+    const f = e.target.files[0]; if(!f) return
+    const isHdr = /\.(hdr|exr)$/i.test(f.name)
+    setSkybox({ type: isHdr?'hdr':'image', value: URL.createObjectURL(f), showBg:true })
   }
 
   const applyUrl = () => {
-    if (!urlInput.trim()) return
-    const isHdr = urlInput.toLowerCase().includes('.hdr') ||
-                  urlInput.toLowerCase().includes('.exr')
-    setSkybox({ type: isHdr ? 'hdr' : 'image', value: urlInput.trim(), showBg: true })
-    setUrlInput('')
-  }
-
-  const handleFile = (e) => {
-    const file = e.target.files[0]
-    if (!file) return
-    const url  = URL.createObjectURL(file)
-    const isHdr = file.name.toLowerCase().endsWith('.hdr') ||
-                  file.name.toLowerCase().endsWith('.exr')
-    setSkybox({ type: isHdr ? 'hdr' : 'image', value: url, showBg: true })
-  }
-
-  const clearSkybox = () => {
-    setSkybox({ type: 'preset', value: null, showBg: false, bgColor: '#080810' })
+    if(!url.trim()) return
+    const isHdr = /\.(hdr|exr)/i.test(url)
+    setSkybox({ type:isHdr?'hdr':'image', value:url.trim(), showBg:true })
+    setUrl('')
   }
 
   return (
-    <div style={{ padding:'10px', fontFamily:'Space Mono,monospace', overflow:'auto', maxHeight:'100%' }}>
+    <div style={{ padding:12, display:'flex', flexDirection:'column', gap:12 }}>
 
       {/* Show background toggle */}
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
-        <span style={{ fontSize:10, color:'#555', letterSpacing:'0.1em' }}>SHOW BACKGROUND</span>
-        <button
-          onClick={() => setSkybox({ showBg: !skybox.showBg })}
-          style={{
-            padding:'4px 12px',
-            background: skybox.showBg ? 'rgba(0,245,255,0.15)' : 'rgba(255,255,255,0.05)',
-            border: `1px solid ${skybox.showBg ? '#00f5ff' : 'rgba(255,255,255,0.1)'}`,
-            color: skybox.showBg ? '#00f5ff' : '#555',
-            borderRadius:6, cursor:'pointer', fontSize:11, fontFamily:'Space Mono',
-          }}
-        >{skybox.showBg ? 'ON' : 'OFF'}</button>
-      </div>
-
-      {/* Current skybox status */}
-      <div style={{
-        padding:'8px 10px', marginBottom:10,
-        background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)',
-        borderRadius:6, fontSize:11, color:'#556',
-      }}>
-        <span style={{ color:'#00f5ff' }}>Active: </span>
-        {skybox.type === 'preset'  && `Preset — ${lightingPreset}`}
-        {skybox.type === 'color'   && `Color — ${skybox.bgColor}`}
-        {skybox.type === 'image'   && `Image — ${(skybox.value||'').split('/').pop().substring(0,24)}...`}
-        {skybox.type === 'hdr'     && `HDR — ${(skybox.value||'').split('/').pop().substring(0,24)}...`}
-        {(skybox.type === 'image' || skybox.type === 'hdr') && (
-          <button onClick={clearSkybox} style={{
-            marginLeft:8, background:'none', border:'none',
-            color:'#ff4060', cursor:'pointer', fontSize:11,
-          }}>✕ clear</button>
-        )}
-      </div>
-
-      <hr style={{ border:'none', borderTop:'1px solid rgba(255,255,255,0.07)', margin:'0 0 10px' }} />
-
-      {/* ── Preset environments ── */}
-      <div style={{ fontSize:10, color:'#555', letterSpacing:'0.1em', marginBottom:6 }}>
-        PRESET ENVIRONMENTS
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5, marginBottom:12 }}>
-        {PRESETS.map(p => (
-          <button key={p.id} onClick={() => applyPreset(p.id)} style={{
-            padding:'8px 6px',
-            background: skybox.type==='preset' && lightingPreset===p.id
-              ? `${p.color}88` : 'rgba(255,255,255,0.03)',
-            border: `1px solid ${skybox.type==='preset' && lightingPreset===p.id
-              ? '#00f5ff55' : 'rgba(255,255,255,0.08)'}`,
-            borderRadius:6, cursor:'pointer', fontSize:11,
-            color: skybox.type==='preset' && lightingPreset===p.id ? '#fff' : '#666',
-            fontFamily:'Space Mono',
-            transition:'all 0.15s',
-          }}>
-            {p.icon} {p.label}
-          </button>
-        ))}
-      </div>
-
-      <hr style={{ border:'none', borderTop:'1px solid rgba(255,255,255,0.07)', margin:'0 0 10px' }} />
-
-      {/* ── Solid color ── */}
-      <div style={{ fontSize:10, color:'#555', letterSpacing:'0.1em', marginBottom:6 }}>
-        SOLID COLOR
-      </div>
-      <div style={{ display:'flex', gap:5, flexWrap:'wrap', marginBottom:6 }}>
-        {BG_COLORS.map(col => (
-          <div key={col} onClick={() => applyColor(col)} style={{
-            width:28, height:28, borderRadius:5,
-            background: col,
-            border: `2px solid ${skybox.type==='color' && skybox.bgColor===col
-              ? '#00f5ff' : 'rgba(255,255,255,0.15)'}`,
-            cursor:'pointer',
-            boxShadow: skybox.type==='color' && skybox.bgColor===col
-              ? '0 0 8px #00f5ff' : 'none',
-            transition:'all 0.15s',
-          }} />
-        ))}
-        {/* Custom color picker */}
-        <label style={{ width:28, height:28, borderRadius:5, overflow:'hidden', cursor:'pointer',
-          border:'1px dashed rgba(255,255,255,0.2)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <span style={{ fontSize:16, pointerEvents:'none' }}>+</span>
-          <input type="color" defaultValue="#080810"
-            onChange={e => applyColor(e.target.value)}
-            style={{ position:'absolute', opacity:0, width:0, height:0 }} />
-        </label>
-      </div>
-
-      <hr style={{ border:'none', borderTop:'1px solid rgba(255,255,255,0.07)', margin:'8px 0 10px' }} />
-
-      {/* ── Upload image / HDR ── */}
-      <div style={{ fontSize:10, color:'#555', letterSpacing:'0.1em', marginBottom:6 }}>
-        UPLOAD SKYBOX IMAGE / HDR
-      </div>
-      <div style={{ display:'flex', gap:5, marginBottom:8 }}>
-        <button onClick={() => fileRef.current?.click()} style={{
-          flex:1, padding:'8px 0',
-          background:'rgba(0,245,255,0.08)', border:'1px solid rgba(0,245,255,0.2)',
-          color:'#00f5ff', borderRadius:6, cursor:'pointer',
-          fontSize:11, fontFamily:'Space Mono',
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+        padding:'8px 10px', background:'var(--bg2)', borderRadius:'var(--radius)',
+        border:'1px solid var(--border)' }}>
+        <div>
+          <div style={{ fontSize:12, fontWeight:600, color:'var(--text0)' }}>Show Background</div>
+          <div style={{ fontSize:10, color:'var(--text2)', marginTop:2 }}>
+            {skybox.type==='preset' ? `Preset — ${lightingPreset}` :
+             skybox.type==='color'  ? `Color — ${skybox.bgColor}` :
+             skybox.type==='image'  ? 'Custom Image' : 'HDR'}
+          </div>
+        </div>
+        <button onClick={() => setSkybox({ showBg:!skybox.showBg })} style={{
+          width:40, height:22, borderRadius:11,
+          background: skybox.showBg ? 'var(--accent)' : 'var(--bg4)',
+          border:'none', cursor:'pointer', position:'relative', transition:'background 0.2s',
+          boxShadow: skybox.showBg ? '0 0 8px rgba(79,142,255,0.4)' : 'none',
         }}>
-          📁 UPLOAD FILE
+          <div style={{
+            position:'absolute', top:3, left: skybox.showBg ? 20 : 3,
+            width:16, height:16, borderRadius:8, background:'#fff',
+            transition:'left 0.2s', boxShadow:'0 1px 3px rgba(0,0,0,0.4)',
+          }}/>
         </button>
-        <input ref={fileRef} type="file" accept=".jpg,.jpeg,.png,.hdr,.exr"
-          style={{ display:'none' }} onChange={handleFile} />
       </div>
-      <div style={{ fontSize:10, color:'#444', marginBottom:4 }}>Accepts: JPG, PNG (equirectangular), HDR, EXR</div>
 
-      <hr style={{ border:'none', borderTop:'1px solid rgba(255,255,255,0.07)', margin:'8px 0 10px' }} />
+      {/* Preset environments */}
+      <div>
+        <div style={{ fontSize:10, color:'var(--text2)', fontWeight:600, letterSpacing:'0.08em',
+          marginBottom:6, textTransform:'uppercase' }}>Preset Environments</div>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
+          {PRESETS.map(p => (
+            <button key={p.id}
+              onClick={() => { setLightingPreset(p.id); setSkybox({ type:'preset', value:null }) }}
+              style={{
+                padding:'9px 8px', borderRadius:'var(--radius-sm)',
+                background: skybox.type==='preset' && lightingPreset===p.id ? 'rgba(79,142,255,0.12)' : 'var(--bg2)',
+                border:`1px solid ${skybox.type==='preset' && lightingPreset===p.id ? 'rgba(79,142,255,0.3)' : 'var(--border)'}`,
+                color: skybox.type==='preset' && lightingPreset===p.id ? 'var(--accent)' : 'var(--text1)',
+                fontSize:12, cursor:'pointer', textAlign:'left', transition:'all 0.12s',
+                display:'flex', alignItems:'center', gap:6,
+              }}
+            ><span style={{ opacity:0.7 }}>{p.icon}</span> {p.label}</button>
+          ))}
+        </div>
+      </div>
 
-      {/* ── Paste URL ── */}
-      <div style={{ fontSize:10, color:'#555', letterSpacing:'0.1em', marginBottom:6 }}>
-        PASTE IMAGE / HDR URL
+      {/* Solid color */}
+      <div>
+        <div style={{ fontSize:10, color:'var(--text2)', fontWeight:600, letterSpacing:'0.08em',
+          marginBottom:6, textTransform:'uppercase' }}>Solid Color</div>
+        <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+          {COLORS.map(col => (
+            <div key={col} onClick={() => setSkybox({ type:'color', bgColor:col, showBg:true })}
+              style={{
+                width:30, height:30, borderRadius:'var(--radius-sm)',
+                background:col, cursor:'pointer', transition:'transform 0.1s',
+                border:`2px solid ${skybox.type==='color'&&skybox.bgColor===col ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}`,
+                boxShadow: skybox.type==='color'&&skybox.bgColor===col ? '0 0 8px rgba(79,142,255,0.5)' : 'none',
+              }}
+              onMouseEnter={e=>e.currentTarget.style.transform='scale(1.1)'}
+              onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}
+            />
+          ))}
+          {/* Color picker */}
+          <label style={{ width:30, height:30, borderRadius:'var(--radius-sm)', cursor:'pointer',
+            border:'1px dashed var(--border-hi)', display:'flex', alignItems:'center', justifyContent:'center',
+            color:'var(--text2)', fontSize:18, overflow:'hidden' }}>
+            +
+            <input type="color" onChange={e=>setSkybox({type:'color',bgColor:e.target.value,showBg:true})}
+              style={{ position:'absolute', opacity:0, width:0, height:0 }} />
+          </label>
+        </div>
       </div>
-      <div style={{ display:'flex', gap:5, marginBottom:4 }}>
-        {['image','hdr'].map(t => (
-          <button key={t} onClick={() => setUrlType(t)} style={{
-            flex:1, padding:'5px 0',
-            background: urlType===t ? 'rgba(255,170,0,0.12)' : 'rgba(255,255,255,0.04)',
-            border: `1px solid ${urlType===t ? 'rgba(255,170,0,0.4)' : 'rgba(255,255,255,0.1)'}`,
-            color: urlType===t ? '#ffaa00' : '#555',
-            borderRadius:4, cursor:'pointer', fontSize:10, fontFamily:'Space Mono',
-          }}>{t.toUpperCase()}</button>
-        ))}
-      </div>
-      <input
-        value={urlInput}
-        onChange={e => setUrlInput(e.target.value)}
-        onKeyDown={e => e.key==='Enter' && applyUrl()}
-        placeholder="https://...equirectangular.jpg"
-        style={{
-          width:'100%', padding:'7px 8px', marginBottom:6,
-          background:'rgba(0,10,30,0.7)', border:'1px solid rgba(0,245,255,0.18)',
-          borderRadius:6, color:'#d0e8ff', fontSize:11,
-          fontFamily:'Space Mono', outline:'none', display:'block',
+
+      {/* Upload */}
+      <div>
+        <div style={{ fontSize:10, color:'var(--text2)', fontWeight:600, letterSpacing:'0.08em',
+          marginBottom:6, textTransform:'uppercase' }}>Upload Skybox</div>
+        <button onClick={() => fileRef.current?.click()} style={{
+          width:'100%', padding:'10px', borderRadius:'var(--radius)',
+          background:'var(--bg2)', border:'2px dashed var(--border-hi)',
+          color:'var(--text1)', fontSize:12, cursor:'pointer', transition:'all 0.15s',
         }}
-      />
-      <button onClick={applyUrl} style={{
-        width:'100%', padding:'8px 0',
-        background:'rgba(255,170,0,0.1)', border:'1px solid rgba(255,170,0,0.3)',
-        color:'#ffaa00', borderRadius:6, cursor:'pointer',
-        fontSize:11, fontFamily:'Space Mono',
-      }}>APPLY URL</button>
-
-      <div style={{ marginTop:10, padding:'8px', background:'rgba(0,245,255,0.03)',
-        border:'1px solid rgba(0,245,255,0.07)', borderRadius:6, fontSize:10, color:'#334455', lineHeight:1.7 }}>
-        💡 Free equirectangular HDRs:<br/>
-        <a href="https://polyhaven.com/hdris" target="_blank"
-          style={{ color:'#0077aa', textDecoration:'none' }}>polyhaven.com/hdris ↗</a><br/>
-        Right-click → Copy image address → paste above
+          onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--accent)';e.currentTarget.style.color='var(--text0)'}}
+          onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border-hi)';e.currentTarget.style.color='var(--text1)'}}
+        >📁 Upload Image / HDR / EXR</button>
+        <input ref={fileRef} type="file" accept=".jpg,.jpeg,.png,.hdr,.exr" style={{display:'none'}} onChange={handleFile} />
+        <div style={{ fontSize:10, color:'var(--text3)', marginTop:4 }}>
+          JPG/PNG equirectangular · HDR · EXR
+        </div>
       </div>
+
+      {/* URL */}
+      <div>
+        <div style={{ fontSize:10, color:'var(--text2)', fontWeight:600, letterSpacing:'0.08em',
+          marginBottom:6, textTransform:'uppercase' }}>Paste URL</div>
+        <div style={{ display:'flex', gap:5, marginBottom:4 }}>
+          {['image','hdr'].map(t=>(
+            <button key={t} onClick={()=>setUrlType(t)} style={{
+              flex:1, padding:'4px 0', borderRadius:'var(--radius-sm)',
+              background:urlType===t?'rgba(79,142,255,0.12)':'var(--bg2)',
+              border:`1px solid ${urlType===t?'rgba(79,142,255,0.3)':'var(--border)'}`,
+              color:urlType===t?'var(--accent)':'var(--text1)',
+              fontSize:10, fontWeight:600, cursor:'pointer',
+            }}>{t.toUpperCase()}</button>
+          ))}
+        </div>
+        <div style={{ display:'flex', gap:5 }}>
+          <input value={url} onChange={e=>setUrl(e.target.value)}
+            onKeyDown={e=>e.key==='Enter'&&applyUrl()}
+            placeholder="https://…equirectangular.jpg" style={{ flex:1 }} />
+          <button onClick={applyUrl} style={{
+            padding:'5px 10px', borderRadius:'var(--radius-sm)',
+            background:'var(--accent)', border:'none', color:'#fff',
+            fontSize:11, fontWeight:600, cursor:'pointer', flexShrink:0,
+          }}>Apply</button>
+        </div>
+      </div>
+
+      {/* Free HDR link */}
+      <div style={{ padding:'10px', background:'var(--bg2)', borderRadius:'var(--radius)',
+        border:'1px solid var(--border)', fontSize:11, color:'var(--text2)', lineHeight:1.6 }}>
+        💡 Free HDRIs at{' '}
+        <a href="https://polyhaven.com/hdris" target="_blank"
+          style={{ color:'var(--accent)', textDecoration:'none' }}>polyhaven.com ↗</a>
+        <br/>Right-click 1K JPEG → Copy image address → paste above
+      </div>
+
+      {/* Clear */}
+      {(skybox.type==='image'||skybox.type==='hdr') && (
+        <button onClick={() => setSkybox({type:'preset',value:null,showBg:false,bgColor:'#0c0c10'})} style={{
+          padding:'7px 0', borderRadius:'var(--radius-sm)',
+          background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)',
+          color:'var(--danger)', fontSize:11, cursor:'pointer',
+        }}>✕ Clear Custom Skybox</button>
+      )}
     </div>
   )
 }
