@@ -5,12 +5,16 @@ import Timeline from './components/Timeline'
 import ModelsPanel from './components/ModelsPanel'
 import PropertiesPanel from './components/PropertiesPanel'
 import ExportPanel from './components/ExportPanel'
+import AnimationPlayer from './components/AnimationPlayer'
+import CameraMode from './components/CameraMode'
 import useStore from './store/useStore'
 
 const PANEL_TABS = [
-  { id: 'models', label: 'MODELS', icon: '◈' },
-  { id: 'properties', label: 'PROPS', icon: '⚙' },
-  { id: 'export', label: 'EXPORT', icon: '▶' },
+  { id: 'models',      label: 'MODELS',  icon: '◈'  },
+  { id: 'properties',  label: 'PROPS',   icon: '⚙'  },
+  { id: 'animations',  label: 'ANIMS',   icon: '🎞'  },
+  { id: 'camera',      label: 'CAMERA',  icon: '🎥'  },
+  { id: 'export',      label: 'EXPORT',  icon: '▶'  },
 ]
 
 function SidePanel({ canvasRef }) {
@@ -60,6 +64,8 @@ function SidePanel({ canvasRef }) {
       <div style={{ flex: 1, overflow: 'auto' }}>
         {activePanel === 'models' && <ModelsPanel />}
         {activePanel === 'properties' && <PropertiesPanel />}
+        {activePanel === 'animations' && <AnimationPlayer />}
+        {activePanel === 'camera' && <CameraMode sceneRef={canvasRef} />}
         {activePanel === 'export' && <ExportPanel canvasRef={canvasRef} />}
       </div>
     </div>
@@ -116,6 +122,8 @@ function MobileDrawer({ canvasRef }) {
     }}>
       {activePanel === 'models' && <ModelsPanel />}
       {activePanel === 'properties' && <PropertiesPanel />}
+      {activePanel === 'animations' && <AnimationPlayer />}
+      {activePanel === 'camera' && <CameraMode sceneRef={canvasRef} />}
       {activePanel === 'export' && <ExportPanel canvasRef={canvasRef} />}
     </div>
   )
