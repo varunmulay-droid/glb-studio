@@ -1,14 +1,35 @@
 import { useState, useRef } from 'react'
 import useStore from '../store/useStore'
 
-const SAMPLES = [
-  { name: 'Fox',      url: 'https://threejs.org/examples/models/gltf/Fox/glTF/Fox.gltf' },
-  { name: 'Robot',    url: 'https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb' },
-  { name: 'Soldier',  url: 'https://threejs.org/examples/models/gltf/Soldier.glb' },
-  { name: 'Flamingo', url: 'https://threejs.org/examples/models/gltf/Flamingo.glb' },
-  { name: 'Horse',    url: 'https://threejs.org/examples/models/gltf/Horse.glb' },
-  { name: 'Parrot',   url: 'https://threejs.org/examples/models/gltf/Parrot.glb' },
+const SAMPLE_CATEGORIES = [
+  {
+    label: '🚗 Vehicles',
+    items: [
+      { name: 'Race Car',    url: 'https://vazxmixjsiawhamofees.supabase.co/storage/v1/object/public/models/car-sport/model.gltf' },
+      { name: 'Low Poly Car',url: 'https://market-assets.fra1.cdn.digitaloceanspaces.com/market-assets/models/car-with-2-doors/model.gltf' },
+      { name: 'Truck',       url: 'https://market-assets.fra1.cdn.digitaloceanspaces.com/market-assets/models/truck/model.gltf' },
+    ]
+  },
+  {
+    label: '🏙️ City / Environment',
+    items: [
+      { name: 'City Block',  url: 'https://market-assets.fra1.cdn.digitaloceanspaces.com/market-assets/models/city-buildings/model.gltf' },
+      { name: 'Tree',        url: 'https://market-assets.fra1.cdn.digitaloceanspaces.com/market-assets/models/tree-spruce/model.gltf' },
+      { name: 'Bench',       url: 'https://market-assets.fra1.cdn.digitaloceanspaces.com/market-assets/models/bench/model.gltf' },
+    ]
+  },
+  {
+    label: '🦊 Characters',
+    items: [
+      { name: 'Fox',         url: 'https://threejs.org/examples/models/gltf/Fox/glTF/Fox.gltf' },
+      { name: 'Robot',       url: 'https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb' },
+      { name: 'Soldier',     url: 'https://threejs.org/examples/models/gltf/Soldier.glb' },
+      { name: 'Flamingo',    url: 'https://threejs.org/examples/models/gltf/Flamingo.glb' },
+    ]
+  },
 ]
+// Flatten for backwards compat
+const SAMPLES = SAMPLE_CATEGORIES.flatMap(c => c.items)
 
 const COLORS = ['#4f8eff','#ef4444','#06d6a0','#f59e0b','#8b5cf6','#f97316']
 
@@ -98,24 +119,28 @@ export default function ModelsPanel() {
       </button>
 
       {samples && (
-        <div style={{
-          display:'grid', gridTemplateColumns:'1fr 1fr',
-          gap:5, animation:'fadeUp 0.15s ease',
-        }}>
-          {SAMPLES.map(s => (
-            <button key={s.url}
-              onClick={() => { addModel(s.url, s.name); setSamples(false) }}
-              style={{
-                padding:'8px 10px', borderRadius:'var(--radius-sm)',
-                background:'var(--bg3)', border:'1px solid var(--border)',
-                color:'var(--text1)', fontSize:11, cursor:'pointer',
-                textAlign:'left', transition:'all 0.12s',
-              }}
-              onMouseEnter={e => { e.currentTarget.style.background='var(--bg4)'; e.currentTarget.style.color='var(--text0)' }}
-              onMouseLeave={e => { e.currentTarget.style.background='var(--bg3)'; e.currentTarget.style.color='var(--text1)' }}
-            >
-              📦 {s.name}
-            </button>
+        <div style={{ animation:'fadeUp 0.15s ease', display:'flex', flexDirection:'column', gap:8 }}>
+          {SAMPLE_CATEGORIES.map(cat => (
+            <div key={cat.label}>
+              <div style={{ fontSize:10, color:'var(--text2)', fontWeight:700,
+                marginBottom:4, letterSpacing:'0.06em' }}>{cat.label}</div>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:4 }}>
+                {cat.items.map(item => (
+                  <button key={item.url}
+                    onClick={() => { addModel(item.url, item.name); setSamples(false) }}
+                    style={{
+                      padding:'7px 9px', borderRadius:'var(--radius-sm)',
+                      background:'var(--bg3)', border:'1px solid var(--border)',
+                      color:'var(--text1)', fontSize:11, cursor:'pointer',
+                      textAlign:'left', transition:'all 0.12s',
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background='var(--bg4)'; e.currentTarget.style.color='var(--text0)' }}
+                    onMouseLeave={e => { e.currentTarget.style.background='var(--bg3)'; e.currentTarget.style.color='var(--text1)' }}
+                  >{item.name}</button>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}

@@ -6,6 +6,7 @@ import {
 } from '@react-three/drei'
 import * as THREE from 'three'
 import useStore from '../store/useStore'
+import PhysicsEngine from './PhysicsEngine'
 import ModelManager from './ModelManager'
 
 // ── Lighting ──────────────────────────────────────────────────────────────────
@@ -203,6 +204,7 @@ export default function Scene({ canvasRef }) {
       </Suspense>
 
       <DualOrbitControls />
+      <PhysicsEngine />
 
       <GizmoHelper alignment="bottom-right" margin={[80, 90]}>
         <GizmoViewport axisColors={['#ff4060','#40ff80','#4080ff']} labelColor="#ffffff" />

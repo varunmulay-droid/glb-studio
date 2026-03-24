@@ -150,6 +150,27 @@ const useStore = create(
     urlInputVisible: false,
     setUrlInputVisible: (v) => set(state => { state.urlInputVisible = v }),
 
+
+    // ── Physics ──────────────────────────────────────────────────────────
+    physicsEnabled: false,
+    gravity: -9.82,
+    setPhysicsEnabled: (v) => set(state => { state.physicsEnabled = v }),
+    setGravity: (v) => set(state => { state.gravity = v }),
+    // Per-model physics props
+    modelPhysics: {},  // { [id]: { mass, damping, angularDamping, type:'dynamic'|'static'|'kinematic', friction, restitution } }
+    setModelPhysics: (id, props) => set(state => {
+      state.modelPhysics[id] = { ...state.modelPhysics[id], ...props }
+    }),
+
+    // ── AI Controller ─────────────────────────────────────────────────────
+    aiMessages: [],   // chat history
+    aiThinking: false,
+    openrouterKey: '',
+    setOpenrouterKey: (k) => set(state => { state.openrouterKey = k }),
+    setAiThinking: (v) => set(state => { state.aiThinking = v }),
+    addAiMessage: (msg) => set(state => { state.aiMessages = [...state.aiMessages, msg] }),
+    clearAiMessages: () => set(state => { state.aiMessages = [] }),
+
     // ── Helpers ───────────────────────────────────────────────────────
     getSelectedModel: () => {
       const { models, selectedModelId } = get()
