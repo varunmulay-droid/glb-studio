@@ -1,308 +1,238 @@
 /**
  * AIController.jsx
- * OpenRouter LLM with auto-retry across multiple free models.
- * Has FULL real-time control over the 3D scene:
- * - Move/rotate/scale objects instantly OR via keyframes
- * - Physics: enable, gravity, impulses, forces
- * - Animations: switch clips, speed, play/pause
- * - Lighting, skybox, camera
- * - Create complex multi-step animation sequences
+ * Full AI scene controller with:
+ * - Command interpreter layer (not raw LLM → scene)
+ * - Voice input (Web Speech API)
+ * - Animation preset generator
+ * - Context memory ("it", "the car", last selected)
+ * - Auto-retry across 5 free OpenRouter models
+ * - Structured command validation
+ * - Object registry (resolve by name/type/alias)
  */
 import { useState, useRef, useEffect, useCallback } from 'react'
 import useStore from '../store/useStore'
-import { applyImpulse, setBodyVelocity } from './PhysicsEngine'
+import {
+  parseLLMResponse, executeCommands,
+  resolveTarget, generatePresetAnimation,
+} from './CommandInterpreter'
 
-const BASE_URL = 'https://openrouter.ai/api/v1'
-
-// Free models with fallback chain (tried in order on 429)
+const BASE_URL   = 'https://openrouter.ai/api/v1'
 const FREE_MODELS = [
   'meta-llama/llama-3.1-8b-instruct:free',
   'google/gemma-3-4b-it:free',
   'mistralai/mistral-7b-instruct:free',
-  'stepfun/step-3.5-flash:free',
   'qwen/qwen3-8b:free',
+  'stepfun/step-3.5-flash:free',
 ]
 
-// ── Build detailed scene context ───────────────────────────────────────────────
-function buildSceneContext() {
-  const s = useStore.getState()
-  return {
-    models: s.models.map(m => ({
-      id: m.id,
-      name: m.name,
-      position: m.position.map(v => Math.round(v * 100) / 100),
-      rotation: m.rotation.map(v => Math.round(v * 100) / 100),
-      scale: m.scale.map(v => Math.round(v * 100) / 100),
-      visible: m.visible,
-      animations: m.animations,
-      activeAnimation: m.activeAnimation,
-      animationSpeed: m.animationSpeed,
-    })),
-    selectedModelId: s.selectedModelId,
-    selectedModelName: s.models.find(m => m.id === s.selectedModelId)?.name || null,
-    currentFrame: s.currentFrame,
-    totalFrames: s.totalFrames,
-    fps: s.fps,
-    isPlaying: s.isPlaying,
-    lightingPreset: s.lightingPreset,
-    physicsEnabled: s.physicsEnabled,
-    gravity: s.gravity,
-    keyframeFrames: Object.keys(s.keyframes).map(Number).sort((a,b)=>a-b),
-  }
-}
-
 // ── System prompt ──────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are a powerful AI controller for a 3D animation studio built with Three.js and React.
-You have COMPLETE control over the 3D scene. When users ask you to do something, you EXECUTE it immediately.
+const SYSTEM = `You are an AI controller for a professional 3D animation studio.
+You control a Three.js scene with physics (Cannon.js) and a keyframe timeline.
 
-ALWAYS respond with valid JSON only — no markdown, no explanation outside JSON:
+OUTPUT: Return ONLY valid JSON. No markdown. No explanation outside JSON.
+
+FORMAT:
 {
-  "message": "Brief friendly explanation of what you did",
-  "actions": [ ...array of action objects... ]
+  "message": "Brief friendly description of what you did",
+  "commands": [
+    { "action": "<action>", "target": "<target>", ...params }
+  ]
 }
 
-═══════════════════════════════════════════════════
-AVAILABLE ACTIONS (use as many as needed):
-═══════════════════════════════════════════════════
+═══ ACTIONS ═══
 
-── INSTANT TRANSFORM (moves RIGHT NOW, no animation) ──
-{"type":"set_transform","modelId":"<id>","position":[x,y,z],"rotation":[rx,ry,rz],"scale":[sx,sy,sz]}
-Note: rotation is in radians. 1 full turn = 6.2832. 90° = 1.5708
+INSTANT MOVE (no animation, teleport/offset):
+{ "action":"translate", "target":"<t>", "translate":{"x":0,"y":0,"z":0} }
+{ "action":"set_position","target":"<t>","position":{"x":0,"y":0,"z":0} }
+{ "action":"rotate", "target":"<t>", "rotate":{"x":0,"y":0,"z":90}, "unit":"deg" }
+{ "action":"scale",  "target":"<t>", "scale":{"uniform":2} }
 
-── CREATE KEYFRAME ANIMATION SEQUENCE ──
-This creates smooth movement over time. Provide ALL keyframes needed:
-{"type":"animate_sequence","modelId":"<id>","keyframes":[
-  {"frame":0,"position":[x,y,z],"rotation":[rx,ry,rz],"scale":[sx,sy,sz]},
-  {"frame":60,"position":[x2,y2,z2],"rotation":[rx2,ry2,rz2],"scale":[sx2,sy2,sz2]},
-  {"frame":120,"position":[x3,y3,z3],"rotation":[rx3,ry3,rz3],"scale":[sx3,sy3,sz3]}
+KEYFRAME ANIMATION:
+{ "action":"animate_sequence","target":"<t>","keyframes":[
+  {"frame":0,  "position":{"x":-10,"y":0,"z":0},"rotation":{"x":0,"y":0,"z":0}},
+  {"frame":150,"position":{"x":10, "y":0,"z":0},"rotation":{"x":0,"y":0,"z":0}}
 ]}
 
-── ADD SINGLE KEYFRAME ──
-{"type":"add_keyframe","modelId":"<id>","frame":<n>,"position":[x,y,z],"rotation":[rx,ry,rz],"scale":[sx,sy,sz]}
+PLAYBACK:
+{ "action":"play" }
+{ "action":"pause" }
+{ "action":"set_frame","frame":0 }
 
-── PLAYBACK ──
-{"type":"set_playing","value":true}
-{"type":"set_frame","frame":<n>}
+GLB ANIMATION CLIP:
+{ "action":"set_animation","target":"<t>","animation":"<clipName>","speed":1.0 }
 
-── GLB ANIMATIONS ──
-{"type":"set_animation","modelId":"<id>","animation":"<clipName>","speed":<0.1-3.0>}
+PHYSICS:
+{ "action":"set_physics","enabled":true,"gravity":-9.82 }
+{ "action":"apply_impulse","target":"<t>","impulse":{"x":0,"y":8,"z":0} }
+{ "action":"set_velocity","target":"<t>","velocity":{"x":5,"y":0,"z":0} }
+{ "action":"stop","target":"<t>" }
 
-── PHYSICS ──
-{"type":"set_physics","enabled":true,"gravity":<number, e.g. -9.82>}
-{"type":"apply_impulse","modelId":"<id>","impulse":{"x":<n>,"y":<n>,"z":<n>}}
-{"type":"set_velocity","modelId":"<id>","velocity":{"x":<n>,"y":<n>,"z":<n>}}
+LIGHTING:
+{ "action":"set_lighting","preset":"studio"|"outdoor"|"dramatic"|"neon" }
 
-── LIGHTING ──
-{"type":"set_lighting","preset":"studio"|"outdoor"|"dramatic"|"neon"}
+MODELS:
+{ "action":"add_model","url":"<url>","name":"<n>" }
+{ "action":"remove_model","target":"<t>" }
+{ "action":"hide","target":"<t>" }
+{ "action":"show","target":"<t>" }
+{ "action":"select","target":"<t>" }
 
-── MODEL MANAGEMENT ──
-{"type":"add_model","url":"<url>","name":"<name>"}
-{"type":"remove_model","modelId":"<id>"}
-{"type":"select_model","modelId":"<id>"}
-{"type":"set_visibility","modelId":"<id>","visible":true|false}
+═══ TARGET VALUES ═══
+"selected"    → currently selected model (default)
+"it"/"this"   → same as selected
+"all"         → every model
+"car"/"fox"   → match by name (partial, case-insensitive)
+"<exact-id>"  → model ID from scene state
 
-── MULTI-MODEL OPERATIONS ──
-Apply actions to multiple models using separate action objects in the array.
+═══ COORDINATE SYSTEM ═══
+X = right, Y = up, Z = toward viewer
+Ground = Y 0. 1 unit ≈ 1 meter.
+Forward (away) = Z negative. Right = X positive.
 
-═══════════════════════════════════════════════════
-BUILT-IN MODELS YOU CAN ADD:
-═══════════════════════════════════════════════════
+═══ BUILT-IN MODELS ═══
 Fox:     https://threejs.org/examples/models/gltf/Fox/glTF/Fox.gltf
 Robot:   https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb
 Soldier: https://threejs.org/examples/models/gltf/Soldier.glb
 Parrot:  https://threejs.org/examples/models/gltf/Parrot.glb
-Horse:   https://threejs.org/examples/models/gltf/Horse.glb
 
-═══════════════════════════════════════════════════
-COORDINATE SYSTEM & TIPS:
-═══════════════════════════════════════════════════
-- X axis = left/right, Y = up/down, Z = forward/backward
-- Ground is at Y = 0. Models typically sit at Y = 0 to 1
-- 1 unit ≈ 1 meter. Cars are ~4 units wide
-- For "drive straight across": animate X position from -10 to 10 over frames 0→totalFrames
-- For "spin": animate Y rotation from 0 to 6.2832 (full circle)
-- For "bounce": animate Y position up then down
-- For cars: keep Y constant (ground level), animate X or Z
-- Physics must be enabled for impulse/velocity actions to work
-- When user says "make it move" or "animate it" — use animate_sequence NOT set_transform
-- Always include frame 0 in sequences to set the start position
-- Match modelId EXACTLY from scene state — copy it character for character
+═══ RULES ═══
+1. Always output valid JSON — never plain text
+2. Use animate_sequence for "make it move/drive/walk" (not translate)
+3. For cars driving: animate X or Z position across frames 0→totalFrames
+4. Include frame 0 in every keyframe sequence
+5. Physics impulse only works when physics is enabled
+6. You can chain multiple commands in the array
+7. "it"/"the model"/"that" → target="selected"
 `
 
-// ── Execute AI actions ─────────────────────────────────────────────────────────
-async function executeActions(actions, onLog) {
-  const store = useStore.getState()
-
-  for (const action of actions) {
-    await new Promise(r => setTimeout(r, 60))
-
-    try {
-      switch (action.type) {
-
-        case 'set_transform': {
-          const id = action.modelId
-          if (action.position) store.updateModelTransform(id, 'position', action.position)
-          if (action.rotation) store.updateModelTransform(id, 'rotation', action.rotation)
-          if (action.scale)    store.updateModelTransform(id, 'scale',    action.scale)
-          break
-        }
-
-        case 'animate_sequence': {
-          const id  = action.modelId
-          const kfs = action.keyframes || []
-          for (const kf of kfs) {
-            store.setCurrentFrame(kf.frame)
-            await new Promise(r => setTimeout(r, 40))
-            if (kf.position) store.updateModelTransform(id, 'position', kf.position)
-            if (kf.rotation) store.updateModelTransform(id, 'rotation', kf.rotation)
-            if (kf.scale)    store.updateModelTransform(id, 'scale',    kf.scale)
-            store.addKeyframe(kf.frame, id)
-          }
-          store.setCurrentFrame(0)
-          break
-        }
-
-        case 'add_keyframe': {
-          const id = action.modelId
-          if (action.position) store.updateModelTransform(id, 'position', action.position)
-          if (action.rotation) store.updateModelTransform(id, 'rotation', action.rotation)
-          if (action.scale)    store.updateModelTransform(id, 'scale',    action.scale)
-          await new Promise(r => setTimeout(r, 30))
-          store.addKeyframe(action.frame, id)
-          break
-        }
-
-        case 'set_playing':
-          store.setIsPlaying(action.value)
-          break
-
-        case 'set_frame':
-          store.setCurrentFrame(Math.max(0, Math.min(action.frame, store.totalFrames - 1)))
-          break
-
-        case 'set_animation':
-          store.setModelActiveAnimation(action.modelId, action.animation)
-          if (action.speed != null) store.setModelAnimSpeed(action.modelId, action.speed)
-          break
-
-        case 'set_physics':
-          store.setPhysicsEnabled(action.enabled)
-          if (action.gravity != null) store.setGravity(action.gravity)
-          break
-
-        case 'apply_impulse':
-          applyImpulse(action.modelId, action.impulse || { x:0, y:5, z:0 })
-          break
-
-        case 'set_velocity':
-          setBodyVelocity(action.modelId, action.velocity || { x:0, y:0, z:0 })
-          break
-
-        case 'set_lighting':
-          store.setLightingPreset(action.preset)
-          break
-
-        case 'add_model':
-          store.addModel(action.url, action.name)
-          break
-
-        case 'remove_model':
-          store.removeModel(action.modelId)
-          break
-
-        case 'select_model':
-          store.selectModel(action.modelId)
-          break
-
-        case 'set_visibility':
-          if (action.visible !== store.models.find(m=>m.id===action.modelId)?.visible)
-            store.toggleModelVisibility(action.modelId)
-          break
-
-        default:
-          console.warn('[AI] Unknown action:', action.type)
-      }
-    } catch (e) {
-      console.error('[AI] Action failed:', action, e)
-    }
+// ── Build scene context ────────────────────────────────────────────────────────
+function buildContext() {
+  const s = useStore.getState()
+  return {
+    models: s.models.map(m => ({
+      id: m.id, name: m.name,
+      position: m.position.map(v=>+v.toFixed(2)),
+      rotation: m.rotation.map(v=>+v.toFixed(3)),
+      scale:    m.scale.map(v=>+v.toFixed(2)),
+      visible:  m.visible,
+      animations: m.animations,
+      activeAnimation: m.activeAnimation,
+    })),
+    selected: s.selectedModelId,
+    selectedName: s.models.find(m=>m.id===s.selectedModelId)?.name || null,
+    lastSelected: s.lastSelectedModelId,
+    currentFrame: s.currentFrame,
+    totalFrames:  s.totalFrames,
+    fps:          s.fps,
+    isPlaying:    s.isPlaying,
+    lightingPreset: s.lightingPreset,
+    physicsEnabled: s.physicsEnabled,
+    gravity:        s.gravity,
   }
 }
 
-// ── Safe JSON parse ────────────────────────────────────────────────────────────
-function parseAIResponse(text) {
-  // Strip markdown code fences if present
-  const clean = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim()
-  // Find first { ... }
-  const start = clean.indexOf('{')
-  const end   = clean.lastIndexOf('}')
-  if (start === -1 || end === -1) return { message: text, actions: [] }
-  try {
-    return JSON.parse(clean.slice(start, end + 1))
-  } catch (e) {
-    // Try to extract just the message
-    const msgMatch = text.match(/"message"\s*:\s*"([^"]+)"/)
-    return { message: msgMatch?.[1] || text, actions: [] }
-  }
-}
-
-// ── API call with fallback retry ───────────────────────────────────────────────
-async function callWithFallback(messages, apiKey, modelIdx = 0) {
-  if (modelIdx >= FREE_MODELS.length) {
-    throw new Error('All free models are rate-limited. Please wait a minute and try again, or add your own OpenRouter API key.')
-  }
+// ── OpenRouter call with model fallback chain ─────────────────────────────────
+async function callAI(messages, apiKey, modelIdx=0) {
+  if (modelIdx >= FREE_MODELS.length)
+    throw new Error('All free models are rate-limited. Please wait ~1 min and retry.')
 
   const model = FREE_MODELS[modelIdx]
-  const res = await fetch(`${BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-      'HTTP-Referer': window.location.origin,
-      'X-Title': 'GLB Studio',
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: 2048,
-      temperature: 0.4,
-    }),
-  })
+  let res
+  try {
+    res = await fetch(`${BASE_URL}/chat/completions`, {
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':`Bearer ${apiKey}`,
+        'HTTP-Referer': window.location.origin,
+        'X-Title': 'GLB Studio',
+      },
+      body: JSON.stringify({ model, messages, max_tokens:2048, temperature:0.3 }),
+    })
+  } catch(e) {
+    // Network error — try next
+    return callAI(messages, apiKey, modelIdx+1)
+  }
 
   if (res.status === 429 || res.status === 503) {
-    console.warn(`[AI] ${model} rate-limited, trying next model…`)
-    return callWithFallback(messages, apiKey, modelIdx + 1)
+    console.info(`[AI] ${model} rate-limited → trying next…`)
+    return callAI(messages, apiKey, modelIdx+1)
   }
-
   if (!res.ok) {
-    const err = await res.text()
-    // If provider error, also try next
-    if (err.includes('Provider returned error') || err.includes('rate') || err.includes('429')) {
-      return callWithFallback(messages, apiKey, modelIdx + 1)
-    }
-    throw new Error(`API ${res.status}: ${err.slice(0, 300)}`)
+    const txt = await res.text()
+    if (txt.includes('429') || txt.includes('rate') || txt.includes('Provider returned error'))
+      return callAI(messages, apiKey, modelIdx+1)
+    throw new Error(`API ${res.status}: ${txt.slice(0,250)}`)
   }
-
   const data = await res.json()
   return { data, model }
 }
 
-// ── UI Helpers ─────────────────────────────────────────────────────────────────
-function ChatBubble({ msg }) {
+// ── Voice recognition ─────────────────────────────────────────────────────────
+function useVoice(onResult) {
+  const recRef = useRef(null)
+  const [listening, setListening] = useState(false)
+
+  const supported = typeof window !== 'undefined' &&
+    ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
+
+  const toggle = useCallback(() => {
+    if (!supported) return
+    if (listening) {
+      recRef.current?.stop()
+      setListening(false)
+      return
+    }
+    const SRClass = window.SpeechRecognition || window.webkitSpeechRecognition
+    const rec = new SRClass()
+    rec.lang = 'en-US'; rec.interimResults = false; rec.maxAlternatives = 1
+    rec.onresult = e => {
+      const txt = e.results[0][0].transcript
+      setListening(false)
+      onResult(txt)
+    }
+    rec.onerror  = () => setListening(false)
+    rec.onend    = () => setListening(false)
+    rec.start()
+    recRef.current = rec
+    setListening(true)
+  }, [listening, supported, onResult])
+
+  return { toggle, listening, supported }
+}
+
+// ── Quick prompt presets ──────────────────────────────────────────────────────
+const QUICK = [
+  { icon:'🚗', label:'Car drives straight', text:'Make the car drive straight across the scene from left to right' },
+  { icon:'🏎️', label:'Figure-8 path',       text:'Make the car do a figure-8 animation path' },
+  { icon:'🔄', label:'Spin 360°',            text:'Make the selected model spin 360 degrees over the full timeline' },
+  { icon:'⬆️', label:'Bounce',              text:'Make the selected model bounce up and down repeatedly' },
+  { icon:'⚡', label:'Enable Physics',       text:'Enable physics with Earth gravity' },
+  { icon:'🚀', label:'Launch up',            text:'Enable physics and launch the selected model upward' },
+  { icon:'🌙', label:'Night scene',          text:'Switch to dramatic night lighting' },
+  { icon:'☀️', label:'Outdoor scene',       text:'Switch to outdoor sunny lighting' },
+  { icon:'▶️', label:'Play timeline',       text:'Play the animation timeline' },
+  { icon:'📦', label:'Add Fox',             text:'Add the Fox GLB model to the scene' },
+]
+
+// ── Chat message ──────────────────────────────────────────────────────────────
+function Bubble({ msg }) {
   const isUser  = msg.role === 'user'
   const isError = msg.role === 'error'
   const isInfo  = msg.role === 'info'
 
   if (isInfo) return (
-    <div style={{ padding:'6px 10px', borderRadius:6,
-      background:'rgba(79,142,255,0.08)', border:'1px solid rgba(79,142,255,0.15)',
-      fontSize:10, color:'var(--accent)', fontStyle:'italic' }}>{msg.content}</div>
+    <div style={{ fontSize:10, color:'var(--accent)', fontStyle:'italic',
+      padding:'4px 8px', background:'rgba(79,142,255,0.06)', borderRadius:5 }}>{msg.content}</div>
   )
   if (isError) return (
-    <div style={{ padding:'8px 12px', borderRadius:8,
-      background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)',
+    <div style={{ padding:'9px 12px', borderRadius:8,
+      background:'rgba(239,68,68,0.07)', border:'1px solid rgba(239,68,68,0.2)',
       fontSize:11, color:'var(--danger)', lineHeight:1.5 }}>
-      <div style={{ fontWeight:700, marginBottom:3 }}>❌ Error</div>
-      {msg.content}
+      <b>❌ Error: </b>{msg.content}
+      {msg.retry && <div style={{marginTop:4,color:'var(--text2)'}}>
+        Tip: wait 30s and try again, or use a different prompt.
+      </div>}
     </div>
   )
 
@@ -310,167 +240,147 @@ function ChatBubble({ msg }) {
     <div style={{ display:'flex', flexDirection:'column',
       alignItems: isUser ? 'flex-end' : 'flex-start', gap:3 }}>
       <div style={{ fontSize:9, color:'var(--text3)', padding:'0 3px' }}>
-        {isUser ? 'You' : `✦ AI${msg.model ? ` · ${msg.model.split('/')[1]?.split(':')[0]}` : ''}`}
+        {isUser ? 'You' : `✦ AI${msg.model?' · '+msg.model.split('/')[1]?.split(':')[0]:''}`}
       </div>
       <div style={{
-        maxWidth:'90%', padding:'9px 12px',
+        maxWidth:'92%', padding:'9px 12px',
         borderRadius: isUser ? '14px 14px 3px 14px' : '14px 14px 14px 3px',
         background: isUser
-          ? 'linear-gradient(135deg, var(--accent), var(--accent2))'
+          ? 'linear-gradient(135deg,var(--accent),var(--accent2))'
           : 'var(--bg3)',
         border: isUser ? 'none' : '1px solid var(--border-hi)',
         color: isUser ? '#fff' : 'var(--text0)',
         fontSize:12, lineHeight:1.55,
-        boxShadow: isUser ? '0 2px 12px rgba(79,142,255,0.3)' : 'none',
+        boxShadow: isUser ? '0 2px 12px rgba(79,142,255,0.25)' : 'none',
       }}>{msg.display || msg.content}</div>
-      {msg.actionsCount > 0 && (
+      {msg.cmdCount > 0 && (
         <div style={{ fontSize:9, color:'var(--accent3)', padding:'0 3px',
           display:'flex', alignItems:'center', gap:4 }}>
-          <div style={{ width:5,height:5,borderRadius:'50%',background:'var(--accent3)' }}/>
-          {msg.actionsCount} action{msg.actionsCount>1?'s':''} executed
+          <span style={{ width:5, height:5, borderRadius:'50%', background:'var(--accent3)', display:'inline-block' }}/>
+          {msg.cmdCount} command{msg.cmdCount>1?'s':''} executed
         </div>
       )}
     </div>
   )
 }
 
-function ThinkingDots() {
+function Dots() {
   return (
-    <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px',
-      background:'var(--bg3)', borderRadius:10, border:'1px solid var(--border)',
-      alignSelf:'flex-start' }}>
-      <div style={{ display:'flex', gap:4 }}>
-        {[0,1,2].map(i => (
-          <div key={i} style={{ width:6, height:6, borderRadius:'50%',
-            background:'var(--accent)',
-            animation:`pulse 1.2s ease ${i*0.2}s infinite` }}/>
-        ))}
-      </div>
-      <span style={{ fontSize:11, color:'var(--text2)' }}>AI thinking…</span>
+    <div style={{ display:'flex', gap:4, padding:'8px 12px', background:'var(--bg3)',
+      borderRadius:10, border:'1px solid var(--border)', alignSelf:'flex-start',
+      alignItems:'center' }}>
+      {[0,1,2].map(i=>(
+        <div key={i} style={{ width:6,height:6,borderRadius:'50%',background:'var(--accent)',
+          animation:`pulse 1.2s ease ${i*0.2}s infinite` }}/>
+      ))}
+      <span style={{ fontSize:10, color:'var(--text2)', marginLeft:4 }}>thinking…</span>
     </div>
   )
 }
 
-// ── Quick prompts ──────────────────────────────────────────────────────────────
-const QUICK = [
-  { icon:'🚗', text:'Make the car drive straight across the scene' },
-  { icon:'🔄', text:'Make the selected model spin 360° over 150 frames' },
-  { icon:'⬆', text:'Make the selected model jump up and come back down' },
-  { icon:'🌙', text:'Switch to dramatic night lighting' },
-  { icon:'⚡', text:'Enable physics with Earth gravity' },
-  { icon:'🎬', text:'Play all animations in the scene' },
-  { icon:'📦', text:'Add a Fox model at position 0,0,0' },
-  { icon:'🏎️', text:'Create a figure-8 path animation for the car' },
-]
-
-// ── Main Component ─────────────────────────────────────────────────────────────
+// ── Main component ─────────────────────────────────────────────────────────────
 export default function AIController() {
   const {
     openrouterKey, setOpenrouterKey,
     aiMessages, addAiMessage, clearAiMessages,
     aiThinking, setAiThinking,
+    addAiCommandHistory,
   } = useStore()
 
-  const [input,   setInput]    = useState('')
-  const [apiKey,  setApiKey]   = useState(openrouterKey || '')
-  const [showKey, setShowKey]  = useState(!openrouterKey)
-  const [currentModel, setCM]  = useState(FREE_MODELS[0])
+  const [input,    setInput]   = useState('')
+  const [apiKey,   setApiKey]  = useState(openrouterKey || '')
+  const [showKey,  setShowKey] = useState(!openrouterKey)
+  const [activeModel, setAM]   = useState(FREE_MODELS[0])
+  const [showQuick, setShowQ]  = useState(true)
   const chatRef    = useRef()
   const historyRef = useRef([])
-  const textareaRef = useRef()
+  const inputRef   = useRef()
 
-  // Auto-scroll chat
   useEffect(() => {
-    if (chatRef.current)
-      chatRef.current.scrollTop = chatRef.current.scrollHeight
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
   }, [aiMessages, aiThinking])
 
-  const saveKey = () => {
-    setOpenrouterKey(apiKey.trim())
-    setShowKey(false)
-  }
+  const saveKey = () => { setOpenrouterKey(apiKey.trim()); setShowKey(false) }
 
-  const sendMessage = useCallback(async (overrideText) => {
-    const text = (overrideText || input).trim()
+  const send = useCallback(async (overrideText) => {
+    const text = (overrideText !== undefined ? overrideText : input).trim()
     if (!text || aiThinking) return
-
-    const key = useStore.getState().openrouterKey
+    const key  = useStore.getState().openrouterKey
     if (!key) { setShowKey(true); return }
 
-    setInput('')
-    addAiMessage({ role:'user', content: text })
+    setInput(''); setShowQ(false)
+    addAiMessage({ role:'user', content:text })
     setAiThinking(true)
 
-    // Build full message array with scene context
-    const scene   = buildSceneContext()
-    const sysMsg  = SYSTEM_PROMPT + `\n\n═══ CURRENT SCENE STATE ═══\n${JSON.stringify(scene, null, 2)}`
-    const apiMsgs = [
-      { role:'system', content: sysMsg },
-      ...historyRef.current.slice(-16),  // keep last 8 turns
-      { role:'user', content: text },
+    const ctx     = buildContext()
+    const sysMsg  = SYSTEM + `\n\n═══ LIVE SCENE STATE ═══\n${JSON.stringify(ctx,null,2)}`
+    const msgs    = [
+      { role:'system', content:sysMsg },
+      ...historyRef.current.slice(-14),
+      { role:'user', content:text },
     ]
 
     try {
-      const { data, model } = await callWithFallback(apiMsgs, key)
-      setCM(model)
-      const raw     = data.choices?.[0]?.message?.content || '{}'
-      const parsed  = parseAIResponse(raw)
+      const { data, model } = await callAI(msgs, key)
+      setAM(model)
+      const raw    = data.choices?.[0]?.message?.content || '{}'
+      const parsed = parseLLMResponse(raw)
 
-      let actionsApplied = 0
-      if (parsed.actions?.length > 0) {
-        await executeActions(parsed.actions)
-        actionsApplied = parsed.actions.length
+      let cmdCount = 0
+      if (parsed?.commands?.length) {
+        const result = await executeCommands(parsed.commands)
+        cmdCount = result.executed
+        addAiCommandHistory({ prompt:text, commands:parsed.commands, model, timestamp:Date.now() })
       }
 
-      // Update conversation history
       historyRef.current.push(
-        { role:'user',      content: text },
-        { role:'assistant', content: raw  }
+        { role:'user',      content:text },
+        { role:'assistant', content:raw  }
       )
 
       addAiMessage({
-        role:'assistant',
-        content: raw,
-        display: parsed.message || 'Done.',
-        actionsCount: actionsApplied,
-        model,
+        role:'assistant', content:raw,
+        display: parsed?.message || 'Done.',
+        cmdCount, model,
       })
-    } catch (e) {
-      addAiMessage({ role:'error', content: e.message })
+    } catch(e) {
+      addAiMessage({ role:'error', content:e.message, retry:true })
     } finally {
       setAiThinking(false)
     }
-  }, [input, aiThinking, addAiMessage, setAiThinking])
+  }, [input, aiThinking])
+
+  // Voice
+  const { toggle:voiceToggle, listening, supported:voiceSupported } = useVoice(
+    useCallback(txt => { setInput(txt); setTimeout(()=>send(txt),100) }, [send])
+  )
 
   const handleKey = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
+    if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send() }
   }
 
   return (
     <div style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
 
-      {/* ── API Key banner ── */}
+      {/* API Key */}
       {showKey && (
         <div style={{ padding:12, borderBottom:'1px solid var(--border)',
-          background:'rgba(139,92,246,0.06)', animation:'fadeUp 0.2s ease', flexShrink:0 }}>
-          <div style={{ fontSize:12, fontWeight:700, color:'var(--text0)', marginBottom:6,
-            display:'flex', alignItems:'center', gap:6 }}>
-            <span style={{ fontSize:16 }}>✦</span> OpenRouter API Key
+          background:'rgba(139,92,246,0.05)', flexShrink:0 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:'var(--text0)', marginBottom:6 }}>
+            ✦ OpenRouter API Key
           </div>
           <div style={{ fontSize:11, color:'var(--text2)', marginBottom:8, lineHeight:1.6 }}>
-            Get a free key at{' '}
+            Free key at{' '}
             <a href="https://openrouter.ai/keys" target="_blank"
               style={{ color:'#8b5cf6', textDecoration:'none', fontWeight:600 }}>
-              openrouter.ai/keys ↗</a><br/>
-            Free tier · No credit card · Auto-retries on rate limits
+              openrouter.ai/keys ↗</a>
+            <br/>No credit card · Auto-retries 5 models on rate limits
           </div>
           <div style={{ display:'flex', gap:6 }}>
             <input type="password" value={apiKey}
-              onChange={e => setApiKey(e.target.value)}
-              onKeyDown={e => e.key==='Enter' && saveKey()}
-              placeholder="sk-or-v1-…"
-              autoFocus
-              style={{ flex:1 }} />
+              onChange={e=>setApiKey(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&saveKey()}
+              placeholder="sk-or-v1-…" autoFocus style={{flex:1}} />
             <button onClick={saveKey} style={{
               padding:'6px 14px', borderRadius:'var(--radius-sm)',
               background:'#8b5cf6', border:'none', color:'#fff',
@@ -480,105 +390,135 @@ export default function AIController() {
         </div>
       )}
 
-      {/* ── Header ── */}
+      {/* Header */}
       <div style={{ padding:'10px 12px 8px', borderBottom:'1px solid var(--border)',
         display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
         <div>
           <div style={{ fontSize:13, fontWeight:700, color:'var(--text0)',
             display:'flex', alignItems:'center', gap:6 }}>
-            <span style={{ fontSize:18, color:'#8b5cf6' }}>✦</span>
+            <span style={{ color:'#8b5cf6', fontSize:18 }}>✦</span>
             AI Scene Controller
           </div>
-          <div style={{ fontSize:10, color:'var(--text3)', marginTop:1 }}>
-            {currentModel.split('/')[1]?.split(':')[0] || 'ready'} · auto-retry on rate limits
+          <div style={{ fontSize:9, color:'var(--text3)', marginTop:1 }}>
+            {activeModel.split('/')[1]?.split(':')[0]} · command interpreter · {FREE_MODELS.length} model fallbacks
           </div>
         </div>
-        <div style={{ display:'flex', gap:5 }}>
-          <button onClick={() => setShowKey(!showKey)} style={{
-            padding:'4px 8px', borderRadius:'var(--radius-sm)',
-            background:'var(--bg3)', border:'1px solid var(--border)',
-            color:'var(--text2)', fontSize:10, cursor:'pointer',
-          }}>🔑</button>
-          <button onClick={() => { clearAiMessages(); historyRef.current = [] }} style={{
-            padding:'4px 8px', borderRadius:'var(--radius-sm)',
-            background:'var(--bg3)', border:'1px solid var(--border)',
-            color:'var(--text2)', fontSize:10, cursor:'pointer',
-          }}>Clear</button>
+        <div style={{ display:'flex', gap:4 }}>
+          <button onClick={()=>setShowKey(!showKey)} title="API Key"
+            style={iconBtn('#8b5cf6', showKey)}>🔑</button>
+          <button onClick={()=>setShowQ(!showQuick)} title="Quick actions"
+            style={iconBtn('var(--accent)', showQuick)}>⚡</button>
+          <button onClick={()=>{clearAiMessages();historyRef.current=[];setShowQ(true)}} title="Clear chat"
+            style={iconBtn('var(--text2)',false)}>✕</button>
         </div>
       </div>
 
-      {/* ── Quick prompts (shown when chat is empty) ── */}
-      {aiMessages.length === 0 && !aiThinking && (
-        <div style={{ padding:'10px 12px', borderBottom:'1px solid var(--border)',
-          flexShrink:0, overflowY:'auto', maxHeight:220 }}>
+      {/* Quick prompts */}
+      {showQuick && aiMessages.length===0 && (
+        <div style={{ flexShrink:0, overflowY:'auto', maxHeight:240,
+          padding:'8px 10px', borderBottom:'1px solid var(--border)' }}>
           <div style={{ fontSize:10, color:'var(--text3)', fontWeight:600,
-            letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:6 }}>
-            Quick Actions
-          </div>
-          <div style={{ display:'flex', flexDirection:'column', gap:3 }}>
-            {QUICK.map((q, i) => (
-              <button key={i}
-                onClick={() => sendMessage(q.text)}
+            letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:5 }}>Quick Actions</div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:4 }}>
+            {QUICK.map((q,i) => (
+              <button key={i} onClick={()=>send(q.text)}
                 style={{
-                  padding:'7px 10px', borderRadius:'var(--radius-sm)',
+                  padding:'6px 8px', borderRadius:'var(--radius-sm)',
                   background:'var(--bg2)', border:'1px solid var(--border)',
-                  color:'var(--text1)', fontSize:11, cursor:'pointer',
+                  color:'var(--text1)', fontSize:10, cursor:'pointer',
                   textAlign:'left', transition:'all 0.1s',
-                  display:'flex', alignItems:'center', gap:8,
+                  display:'flex', alignItems:'center', gap:6,
+                  overflow:'hidden',
                 }}
-                onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';e.currentTarget.style.color='var(--text0)';e.currentTarget.style.borderColor='var(--border-hi)'}}
-                onMouseLeave={e=>{e.currentTarget.style.background='var(--bg2)';e.currentTarget.style.color='var(--text1)';e.currentTarget.style.borderColor='var(--border)'}}
+                onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';e.currentTarget.style.borderColor='var(--border-hi)'}}
+                onMouseLeave={e=>{e.currentTarget.style.background='var(--bg2)';e.currentTarget.style.borderColor='var(--border)'}}
               >
-                <span style={{ fontSize:14, flexShrink:0 }}>{q.icon}</span>
-                <span>{q.text}</span>
+                <span style={{flexShrink:0}}>{q.icon}</span>
+                <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{q.label}</span>
               </button>
             ))}
           </div>
         </div>
       )}
 
-      {/* ── Chat messages ── */}
+      {/* Chat */}
       <div ref={chatRef} style={{ flex:1, overflowY:'auto', padding:'12px',
         display:'flex', flexDirection:'column', gap:10, minHeight:0 }}>
-        {aiMessages.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
-        {aiThinking && <ThinkingDots />}
+        {aiMessages.length===0 && !aiThinking && (
+          <div style={{ textAlign:'center', padding:'20px 12px', color:'var(--text3)' }}>
+            <div style={{ fontSize:28, marginBottom:8, opacity:0.5 }}>✦</div>
+            <div style={{ fontSize:12, fontWeight:600, color:'var(--text2)' }}>AI Scene Controller</div>
+            <div style={{ fontSize:11, marginTop:4, lineHeight:1.6 }}>
+              Ask me to move, animate, or control<br/>anything in the 3D scene
+            </div>
+          </div>
+        )}
+        {aiMessages.map((msg,i) => <Bubble key={i} msg={msg} />)}
+        {aiThinking && <Dots />}
       </div>
 
-      {/* ── Input ── */}
+      {/* Input */}
       <div style={{ padding:'10px 12px', borderTop:'1px solid var(--border)',
         background:'var(--bg1)', flexShrink:0 }}>
         <div style={{ display:'flex', gap:6, alignItems:'flex-end' }}>
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
+          {/* Voice button */}
+          {voiceSupported && (
+            <button onClick={voiceToggle}
+              title={listening ? 'Stop listening' : 'Voice input'}
+              style={{
+                width:36, height:36, borderRadius:'var(--radius-sm)', flexShrink:0,
+                background: listening ? 'rgba(239,68,68,0.15)' : 'var(--bg3)',
+                border:`1px solid ${listening ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`,
+                color: listening ? 'var(--danger)' : 'var(--text2)',
+                fontSize:16, cursor:'pointer', transition:'all 0.15s',
+                animation: listening ? 'pulse 1s ease infinite' : 'none',
+                display:'flex', alignItems:'center', justifyContent:'center',
+              }}
+            >{listening ? '⏹' : '🎤'}</button>
+          )}
+
+          <textarea ref={inputRef} value={input}
+            onChange={e=>setInput(e.target.value)}
             onKeyDown={handleKey}
-            placeholder="Ask AI to control the scene… (Enter to send)"
+            placeholder={listening ? '🎤 Listening…' : 'Ask AI to control the scene… (Enter to send)'}
             rows={2}
             style={{ flex:1, resize:'none', borderRadius:'var(--radius-sm)',
               padding:'8px 10px', fontSize:12, lineHeight:1.5,
               fontFamily:'var(--font-ui)',
             }}
           />
-          <button
-            onClick={() => sendMessage()}
-            disabled={aiThinking || !input.trim()}
+
+          <button onClick={()=>send()} disabled={aiThinking||!input.trim()}
             style={{
-              width:38, height:38, borderRadius:'var(--radius-sm)',
-              background: (!aiThinking && input.trim()) ? '#8b5cf6' : 'var(--bg3)',
-              border: `1px solid ${(!aiThinking && input.trim()) ? '#8b5cf6' : 'var(--border)'}`,
-              color: (!aiThinking && input.trim()) ? '#fff' : 'var(--text3)',
-              fontSize:18, cursor: (aiThinking || !input.trim()) ? 'not-allowed' : 'pointer',
-              flexShrink:0, transition:'all 0.15s', display:'flex',
-              alignItems:'center', justifyContent:'center',
-              boxShadow: (!aiThinking && input.trim()) ? '0 0 14px rgba(139,92,246,0.4)' : 'none',
+              width:36, height:36, borderRadius:'var(--radius-sm)', flexShrink:0,
+              background:(!aiThinking&&input.trim())?'#8b5cf6':'var(--bg3)',
+              border:`1px solid ${(!aiThinking&&input.trim())?'#8b5cf6':'var(--border)'}`,
+              color:(!aiThinking&&input.trim())?'#fff':'var(--text3)',
+              fontSize:18, cursor:(aiThinking||!input.trim())?'not-allowed':'pointer',
+              transition:'all 0.15s', display:'flex', alignItems:'center', justifyContent:'center',
+              boxShadow:(!aiThinking&&input.trim())?'0 0 14px rgba(139,92,246,0.4)':'none',
             }}
           >↑</button>
         </div>
-        <div style={{ fontSize:9, color:'var(--text3)', marginTop:5, textAlign:'center' }}>
-          Controls models · animations · physics · lighting · camera
+
+        <div style={{ display:'flex', justifyContent:'space-between', marginTop:5 }}>
+          <div style={{ fontSize:9, color:'var(--text3)' }}>
+            Move · Animate · Physics · Lighting · Voice
+          </div>
+          {listening && (
+            <div style={{ fontSize:9, color:'var(--danger)',
+              animation:'pulse 1s ease infinite' }}>● REC</div>
+          )}
         </div>
       </div>
     </div>
   )
 }
+
+const iconBtn = (color, active) => ({
+  padding:'4px 7px', borderRadius:'var(--radius-sm)',
+  background: active ? `${color}18` : 'var(--bg3)',
+  border:`1px solid ${active ? `${color}44` : 'var(--border)'}`,
+  color: active ? color : 'var(--text2)',
+  fontSize:11, cursor:'pointer', transition:'all 0.12s',
+})

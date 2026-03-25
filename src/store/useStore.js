@@ -170,6 +170,13 @@ const useStore = create(
     setAiThinking: (v) => set(state => { state.aiThinking = v }),
     addAiMessage: (msg) => set(state => { state.aiMessages = [...state.aiMessages, msg] }),
     clearAiMessages: () => set(state => { state.aiMessages = [] }),
+    // AI context memory
+    lastSelectedModelId: null,
+    setLastSelectedModelId: (id) => set(state => { state.lastSelectedModelId = id }),
+    aiCommandHistory: [],   // [{prompt, actions, timestamp}]
+    addAiCommandHistory: (entry) => set(state => {
+      state.aiCommandHistory = [...state.aiCommandHistory.slice(-49), entry]
+    }),
 
     // ── Helpers ───────────────────────────────────────────────────────
     getSelectedModel: () => {
