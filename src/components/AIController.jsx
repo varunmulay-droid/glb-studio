@@ -17,12 +17,19 @@ import {
 } from './CommandInterpreter'
 
 const BASE_URL   = 'https://openrouter.ai/api/v1'
+// Verified working free models on OpenRouter (updated list)
+// Ordered by reliability - falls through on 404/429/503
 const FREE_MODELS = [
-  'meta-llama/llama-3.1-8b-instruct:free',
-  'google/gemma-3-4b-it:free',
+  'google/gemma-2-9b-it:free',
   'mistralai/mistral-7b-instruct:free',
-  'qwen/qwen3-8b:free',
-  'stepfun/step-3.5-flash:free',
+  'microsoft/phi-3-mini-128k-instruct:free',
+  'qwen/qwen-2-7b-instruct:free',
+  'huggingfaceh4/zephyr-7b-beta:free',
+  'openchat/openchat-7b:free',
+  'gryphe/mythomist-7b:free',
+  'meta-llama/llama-3.2-3b-instruct:free',
+  'deepseek/deepseek-r1-distill-qwen-7b:free',
+  'nousresearch/nous-capybara-7b:free',
 ]
 
 // ── System prompt ──────────────────────────────────────────────────────────────
@@ -154,15 +161,21 @@ async function callAI(messages, apiKey, modelIdx=0) {
     return callAI(messages, apiKey, modelIdx+1)
   }
 
-  if (res.status === 429 || res.status === 503) {
-    console.info(`[AI] ${model} rate-limited → trying next…`)
+  // Skip to next model on any of these status codes
+  if ([404, 429, 500, 503, 529].includes(res.status)) {
+    console.info(`[AI] ${model} → ${res.status}, trying next model…`)
     return callAI(messages, apiKey, modelIdx+1)
   }
   if (!res.ok) {
     const txt = await res.text()
-    if (txt.includes('429') || txt.includes('rate') || txt.includes('Provider returned error'))
+    // Also skip on provider errors, rate limits in body, or endpoint not found
+    if (txt.includes('429') || txt.includes('rate') || txt.includes('No endpoints')
+        || txt.includes('Provider returned') || txt.includes('model_not_found')
+        || txt.includes('not found') || txt.includes('unavailable')) {
+      console.info(`[AI] ${model} → body error, trying next…`)
       return callAI(messages, apiKey, modelIdx+1)
-    throw new Error(`API ${res.status}: ${txt.slice(0,250)}`)
+    }
+    throw new Error(`API ${res.status}: ${txt.slice(0,300)}`)
   }
   const data = await res.json()
   return { data, model }

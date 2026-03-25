@@ -54,6 +54,9 @@ const useStore = create(
       if (m) m.activeAnimation = animName
     }),
 
+    setModelAnimPlaying: (id, playing) => set(state => ({
+      models: state.models.map(m => m.id === id ? { ...m, animationPlaying: playing } : m)
+    })),
     setModelAnimSpeed: (id, speed) => set(state => {
       const m = state.models.find(m => m.id === id)
       if (m) m.animationSpeed = speed

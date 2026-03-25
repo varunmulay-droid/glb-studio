@@ -238,7 +238,13 @@ export async function applyCommand(cmd) {
       for (const m of targets) {
         if (cmd.animation) s.setModelActiveAnimation(m.id, cmd.animation)
         if (cmd.speed != null) s.setModelAnimSpeed(m.id, cmd.speed)
+        s.setModelAnimPlaying?.(m.id, true)
       }
+      break
+    }
+
+    case 'pause_animation': {
+      for (const m of targets) s.setModelAnimPlaying?.(m.id, false)
       break
     }
 
