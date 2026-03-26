@@ -1,513 +1,478 @@
 /**
  * CameraMode.jsx
- * Prisma-3D-style cinematic camera system.
- *
- * Features:
- *  - Toggle between FREE (orbit) and CAMERA mode
- *  - In CAMERA mode: WASD + drag to fly the camera
- *  - Add camera keyframes (position + target + fov) at any timeline frame
- *  - Interpolate camera path during playback
- *  - "Capture Frame" — saves canvas PNG from the cinematic camera POV
- *  - "Record Sequence" — captures every frame along the timeline, zips as download
- *
- * Zero changes to existing components needed.
+ * Complete camera management panel:
+ *  - Add / rename / delete cameras
+ *  - Select active camera
+ *  - Enter / Exit camera view (viewport switches to render through camera)
+ *  - FOV, near/far clip controls
+ *  - Camera position/target inputs
+ *  - Camera keyframes on the timeline (per camera)
+ *  - Capture PNG from camera POV
+ *  - Record WebM sequence from camera
+ *  - Camera layer visible in Timeline
  */
-import { useRef, useEffect, useState, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import * as THREE from 'three'
-import useStore from '../store/useStore'
+import useStore   from '../store/useStore'
 
-// ── Zustand camera state (added as a standalone mini-store via module scope) ──
-// We attach camera keyframes directly to the main store's keyframes namespace
-// under the reserved key "__camera__" so the timeline renders them too.
-const CAM_ID = '__camera__'
+const UID = () => `cam_${Date.now().toString(36)}`
 
-// ── Math helpers ──────────────────────────────────────────────────────────────
-const lerpV3 = (a, b, t) => ({
-  x: a.x + (b.x - a.x) * t,
-  y: a.y + (b.y - a.y) * t,
-  z: a.z + (b.z - a.z) * t,
-})
-const lerp = (a, b, t) => a + (b - a) * t
+// Camera keyframe key per camera: __cam_<id>__
+const camKey = id => `__cam_${id}__`
 
-function getCameraKeyframes() {
-  const kf = useStore.getState().keyframes
-  return Object.entries(kf)
-    .filter(([, v]) => v[CAM_ID])
-    .map(([f, v]) => ({ frame: parseInt(f), data: v[CAM_ID] }))
-    .sort((a, b) => a.frame - b.frame)
-}
-
-function interpolateCameraAt(frame) {
-  const keys = getCameraKeyframes()
-  if (!keys.length) return null
-  const before = keys.filter(k => k.frame <= frame)
-  const after  = keys.filter(k => k.frame >  frame)
-  if (!before.length) return keys[0].data
-  if (!after.length)  return keys[keys.length - 1].data
-  const k0 = before[before.length - 1]
-  const k1 = after[0]
-  const t  = (frame - k0.frame) / (k1.frame - k0.frame)
-  const d0 = k0.data, d1 = k1.data
-  return {
-    position: lerpV3(d0.position, d1.position, t),
-    target:   lerpV3(d0.target,   d1.target,   t),
-    fov:      lerp(d0.fov, d1.fov, t),
-  }
-}
-
-// ── Add camera keyframe helper ────────────────────────────────────────────────
-function addCameraKeyframe(frame, position, target, fov) {
-  const store = useStore.getState()
-  const kf = JSON.parse(JSON.stringify(store.keyframes))
+function addCamKeyframe(camId, frame, position, target, fov) {
+  const s  = useStore.getState()
+  const kf = JSON.parse(JSON.stringify(s.keyframes))
   if (!kf[frame]) kf[frame] = {}
-  kf[frame][CAM_ID] = {
-    position: { x: position.x, y: position.y, z: position.z },
-    target:   { x: target.x,   y: target.y,   z: target.z   },
+  kf[frame][camKey(camId)] = {
+    position: Array.isArray(position) ? position : [position.x,position.y,position.z],
+    target:   Array.isArray(target)   ? target   : [target.x,target.y,target.z],
     fov,
   }
   useStore.setState({ keyframes: kf })
 }
 
-function removeCameraKeyframe(frame) {
-  const store = useStore.getState()
-  const kf = JSON.parse(JSON.stringify(store.keyframes))
-  if (kf[frame]) {
-    delete kf[frame][CAM_ID]
+function removeCamKeyframe(camId, frame) {
+  const s  = useStore.getState()
+  const kf = JSON.parse(JSON.stringify(s.keyframes))
+  const k  = camKey(camId)
+  if (kf[frame]?.[k]) {
+    delete kf[frame][k]
     if (!Object.keys(kf[frame]).length) delete kf[frame]
+    useStore.setState({ keyframes: kf })
   }
-  useStore.setState({ keyframes: kf })
 }
 
-// ── Camera controller hook — attaches fly controls to the Three.js canvas ────
-function useCameraController(active, threeCamera, renderer) {
-  const keys    = useRef({})
-  const drag    = useRef({ active: false, lastX: 0, lastY: 0 })
-  const yaw     = useRef(0)
-  const pitch   = useRef(-0.3)
-  const speed   = useRef(0.06)
-  const frameId = useRef(null)
-
-  useEffect(() => {
-    if (!active || !renderer) return
-    const canvas = renderer.domElement
-
-    const onKey = (e, down) => { keys.current[e.code] = down }
-    const onDown = e => {
-      drag.current = { active: true, lastX: e.clientX, lastY: e.clientY }
-    }
-    const onMove = e => {
-      if (!drag.current.active) return
-      const dx = e.clientX - drag.current.lastX
-      const dy = e.clientY - drag.current.lastY
-      drag.current.lastX = e.clientX
-      drag.current.lastY = e.clientY
-      yaw.current   -= dx * 0.003
-      pitch.current -= dy * 0.003
-      pitch.current  = Math.max(-1.4, Math.min(1.4, pitch.current))
-    }
-    const onUp    = () => { drag.current.active = false }
-    const onWheel = e => { speed.current = Math.max(0.01, Math.min(1, speed.current * (1 - e.deltaY * 0.001))) }
-
-    // Touch support
-    let lastTouches = []
-    const onTouchStart = e => {
-      lastTouches = Array.from(e.touches)
-      if (e.touches.length === 1) {
-        drag.current = { active: true, lastX: e.touches[0].clientX, lastY: e.touches[0].clientY }
-      }
-    }
-    const onTouchMove = e => {
-      if (e.touches.length === 1 && drag.current.active) {
-        const dx = e.touches[0].clientX - drag.current.lastX
-        const dy = e.touches[0].clientY - drag.current.lastY
-        drag.current.lastX = e.touches[0].clientX
-        drag.current.lastY = e.touches[0].clientY
-        yaw.current   -= dx * 0.004
-        pitch.current -= dy * 0.004
-        pitch.current  = Math.max(-1.4, Math.min(1.4, pitch.current))
-      }
-    }
-    const onTouchEnd = () => { drag.current.active = false }
-
-    window.addEventListener('keydown', e => onKey(e, true))
-    window.addEventListener('keyup',   e => onKey(e, false))
-    canvas.addEventListener('mousedown',  onDown)
-    window.addEventListener('mousemove',  onMove)
-    window.addEventListener('mouseup',    onUp)
-    canvas.addEventListener('wheel',      onWheel, { passive: true })
-    canvas.addEventListener('touchstart', onTouchStart, { passive: true })
-    canvas.addEventListener('touchmove',  onTouchMove,  { passive: true })
-    canvas.addEventListener('touchend',   onTouchEnd)
-
-    // Fly loop
-    const fly = () => {
-      if (!threeCamera) { frameId.current = requestAnimationFrame(fly); return }
-      const s = speed.current
-      const forward = new THREE.Vector3(
-        Math.sin(yaw.current) * Math.cos(pitch.current),
-        Math.sin(pitch.current),
-        Math.cos(yaw.current) * Math.cos(pitch.current)
-      )
-      const right = new THREE.Vector3()
-        .crossVectors(forward, new THREE.Vector3(0,1,0)).normalize()
-
-      if (keys.current['KeyW'] || keys.current['ArrowUp'])    threeCamera.position.addScaledVector(forward,  s)
-      if (keys.current['KeyS'] || keys.current['ArrowDown'])  threeCamera.position.addScaledVector(forward, -s)
-      if (keys.current['KeyA'] || keys.current['ArrowLeft'])  threeCamera.position.addScaledVector(right,   -s)
-      if (keys.current['KeyD'] || keys.current['ArrowRight']) threeCamera.position.addScaledVector(right,    s)
-      if (keys.current['KeyQ']) threeCamera.position.y -= s
-      if (keys.current['KeyE']) threeCamera.position.y += s
-
-      threeCamera.lookAt(
-        threeCamera.position.x + forward.x,
-        threeCamera.position.y + forward.y,
-        threeCamera.position.z + forward.z,
-      )
-      frameId.current = requestAnimationFrame(fly)
-    }
-    frameId.current = requestAnimationFrame(fly)
-
-    return () => {
-      window.removeEventListener('keydown', e => onKey(e, true))
-      window.removeEventListener('keyup',   e => onKey(e, false))
-      canvas.removeEventListener('mousedown',  onDown)
-      window.removeEventListener('mousemove',  onMove)
-      window.removeEventListener('mouseup',    onUp)
-      canvas.removeEventListener('wheel',      onWheel)
-      canvas.removeEventListener('touchstart', onTouchStart)
-      canvas.removeEventListener('touchmove',  onTouchMove)
-      canvas.removeEventListener('touchend',   onTouchEnd)
-      if (frameId.current) cancelAnimationFrame(frameId.current)
-    }
-  }, [active, threeCamera, renderer])
+function getCamKeyframes(camId) {
+  const kf = useStore.getState().keyframes
+  const k  = camKey(camId)
+  return Object.entries(kf)
+    .filter(([,v]) => v[k])
+    .map(([f,v]) => ({ frame:parseInt(f), data:v[k] }))
+    .sort((a,b)=>a.frame-b.frame)
 }
 
-// ── Main CameraMode component ─────────────────────────────────────────────────
-export default function CameraMode({ sceneRef }) {
-  const [cameraMode, setCameraMode]   = useState(false)
-  const [fov,        setFov]          = useState(50)
-  const [capturing,  setCapturing]    = useState(false)
-  const [recording,  setRecording]    = useState(false)
-  const [progress,   setProgress]     = useState(0)
-  const [camKeys,    setCamKeys]       = useState([])
-
-  const currentFrame = useStore(s => s.currentFrame)
-  const totalFrames  = useStore(s => s.totalFrames)
-  const fps          = useStore(s => s.fps)
-  const isPlaying    = useStore(s => s.isPlaying)
-  const { setCurrentFrame, setIsPlaying } = useStore.getState()
-
-  // Refs to Three.js objects (grabbed from the canvas DOM)
-  const threeCamera   = useRef(null)
-  const threeRenderer = useRef(null)
-  const cancelRecord  = useRef(false)
-
-  // Grab Three.js camera + renderer from the canvas wrapper
-  useEffect(() => {
-    const tryGrab = () => {
-      const canvas = sceneRef?.current?.querySelector('canvas')
-      if (!canvas) return
-      // Access Three.js internals via the canvas's __r3f property (R3F exposes this)
-      const r3f = canvas.__r3f?.root?.getState?.()
-      if (r3f) {
-        threeCamera.current   = r3f.camera
-        threeRenderer.current = r3f.gl
-      }
-    }
-    const t = setInterval(tryGrab, 500)
-    return () => clearInterval(t)
-  }, [sceneRef])
-
-  // Apply camera keyframe interpolation during playback
-  useEffect(() => {
-    if (!cameraMode || !threeCamera.current) return
-    const interp = interpolateCameraAt(currentFrame)
-    if (!interp) return
-    const { position, target, fov: kfov } = interp
-    threeCamera.current.position.set(position.x, position.y, position.z)
-    threeCamera.current.lookAt(target.x, target.y, target.z)
-    threeCamera.current.fov = kfov
-    threeCamera.current.updateProjectionMatrix()
-    setFov(kfov)
-  }, [currentFrame, cameraMode])
-
-  // Update fov on camera
-  useEffect(() => {
-    if (!threeCamera.current) return
-    threeCamera.current.fov = fov
-    threeCamera.current.updateProjectionMatrix()
-  }, [fov])
-
-  // Fly controls
-  useCameraController(
-    cameraMode,
-    threeCamera.current,
-    threeRenderer.current,
+// ── Vec3 input row ─────────────────────────────────────────────────────────────
+function Vec3Input({ label, value, onChange, step=0.1 }) {
+  const axes = ['X','Y','Z']
+  const colors = ['#ef4444','#22c55e','#3b82f6']
+  return (
+    <div style={{ marginBottom:8 }}>
+      <div style={{ fontSize:10, color:'var(--text2)', fontWeight:600,
+        letterSpacing:'0.06em', marginBottom:4 }}>{label}</div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:4 }}>
+        {axes.map((ax,i) => (
+          <div key={ax} style={{ display:'flex', alignItems:'center',
+            background:'var(--bg1)', border:`1px solid ${colors[i]}33`,
+            borderRadius:'var(--radius-sm)', overflow:'hidden' }}>
+            <span style={{ padding:'0 5px', fontSize:9, fontWeight:700,
+              color:colors[i], background:'var(--bg2)', alignSelf:'stretch',
+              display:'flex', alignItems:'center', borderRight:`1px solid ${colors[i]}22` }}>{ax}</span>
+            <input type="number" step={step}
+              value={(value?.[i]||0).toFixed(2)}
+              onChange={e => {
+                const v = [...(value||[0,0,0])]
+                v[i] = parseFloat(e.target.value)||0; onChange(v)
+              }}
+              style={{ border:'none', background:'transparent', width:'100%',
+                padding:'5px 4px', fontSize:11, fontFamily:'var(--font-mono)', color:'var(--text0)' }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
   )
+}
 
-  // Refresh camera keyframe list
-  const refreshKeys = useCallback(() => {
-    setCamKeys(getCameraKeyframes())
-  }, [])
+// ── Single camera card ─────────────────────────────────────────────────────────
+function CameraCard({ cam, isActive, isInView }) {
+  const {
+    setActiveCameraId, setInCameraView, updateCamera, removeCamera, cameras,
+    currentFrame, inCameraView, activeCameraId,
+  } = useStore()
+  const [expanded, setExpanded] = useState(isActive)
+  const [renaming, setRenaming] = useState(false)
+  const [nameVal,  setNameVal]  = useState(cam.name)
+  const [camKeys,  setCamKeys]  = useState([])
+  const recording  = useRef(false)
+  const cancelRef  = useRef(false)
+  const [recProg,  setRecProg]  = useState(0)
+  const [recActive,setRecAct]   = useState(false)
 
+  const refreshKeys = useCallback(() => setCamKeys(getCamKeyframes(cam.id)), [cam.id])
   useEffect(() => {
-    // Subscribe to keyframe changes
-    const unsub = useStore.subscribe(
-      s => s.keyframes,
-      () => refreshKeys()
-    )
+    const unsub = useStore.subscribe(s=>s.keyframes, refreshKeys)
     refreshKeys()
     return unsub
   }, [refreshKeys])
 
-  // Add camera keyframe at current frame
-  const addKey = () => {
-    const cam = threeCamera.current
-    if (!cam) return
-    const dir = new THREE.Vector3()
-    cam.getWorldDirection(dir)
-    const target = cam.position.clone().add(dir.multiplyScalar(5))
-    addCameraKeyframe(currentFrame, cam.position, target, cam.fov)
+  const enterCamera = () => {
+    setActiveCameraId(cam.id)
+    setInCameraView(true)
+    setExpanded(true)
+  }
+  const exitCamera = () => {
+    setInCameraView(false)
+  }
+
+  const addKF = () => {
+    const s   = useStore.getState()
+    // Get current viewport camera position (the r3f camera if we're in view, else cam data)
+    const pos = cam.position || [5,3,5]
+    const tgt = cam.target   || [0,0,0]
+    addCamKeyframe(cam.id, currentFrame, pos, tgt, cam.fov||50)
     refreshKeys()
   }
 
-  // Capture single frame PNG
   const captureFrame = () => {
-    const canvas = sceneRef?.current?.querySelector('canvas')
+    const canvas = document.querySelector('canvas')
     if (!canvas) return
     const url  = canvas.toDataURL('image/png')
-    const link = document.createElement('a')
-    link.href     = url
-    link.download = `frame_${String(currentFrame).padStart(4,'0')}.png`
-    link.click()
+    const a    = document.createElement('a')
+    a.href = url; a.download = `${cam.name}_frame${currentFrame}.png`; a.click()
   }
 
-  // Record full sequence → WebM
-  const recordSequence = async () => {
-    const canvas = sceneRef?.current?.querySelector('canvas')
-    if (!canvas || recording) return
-    setRecording(true)
-    cancelRecord.current = false
+  const recordSeq = async () => {
+    const canvas = document.querySelector('canvas')
+    if (!canvas || recActive) return
+    const s = useStore.getState()
+    setRecAct(true); cancelRef.current = false
     const chunks = []
-
-    const stream   = canvas.captureStream(fps)
-    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm', videoBitsPerSecond: 10_000_000 })
-    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data) }
-
-    recorder.start()
-    const sleep = ms => new Promise(r => setTimeout(r, ms))
-
-    for (let f = 0; f < totalFrames; f++) {
-      if (cancelRecord.current) break
-      setCurrentFrame(f)
-      await sleep(1000 / fps + 8)
-      setProgress(Math.round((f / totalFrames) * 100))
+    const rec = new MediaRecorder(canvas.captureStream(s.fps),
+      { mimeType:'video/webm', videoBitsPerSecond:10_000_000 })
+    rec.ondataavailable = e => chunks.push(e.data)
+    rec.start()
+    for (let f=0; f<s.totalFrames; f++) {
+      if (cancelRef.current) break
+      s.setCurrentFrame(f)
+      await new Promise(r=>setTimeout(r,1000/s.fps+8))
+      setRecProg(Math.round(f/s.totalFrames*100))
     }
-
-    recorder.stop()
-    await new Promise(r => { recorder.onstop = r })
-
-    if (!cancelRecord.current) {
-      const blob = new Blob(chunks, { type: 'video/webm' })
-      const url  = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href     = url
-      link.download = `cinematic_${Date.now()}.webm`
-      link.click()
+    rec.stop()
+    await new Promise(r=>{ rec.onstop=r })
+    if (!cancelRef.current) {
+      const url = URL.createObjectURL(new Blob(chunks,{type:'video/webm'}))
+      const a   = document.createElement('a')
+      a.href=url; a.download=`${cam.name}_${Date.now()}.webm`; a.click()
     }
-
-    setRecording(false)
-    setProgress(0)
-    setCurrentFrame(0)
+    setRecAct(false); setRecProg(0); s.setCurrentFrame(0)
   }
 
-  const hasKeyNow = camKeys.some(k => k.frame === currentFrame)
+  const hasKfNow = camKeys.some(k=>k.frame===currentFrame)
+  const thisActive = activeCameraId===cam.id
+  const inThisView = thisActive && inCameraView
 
   return (
-    <div style={{ fontFamily:'Space Mono,monospace', overflow:'auto', maxHeight:'100%' }}>
+    <div style={{
+      border:`1px solid ${thisActive ? 'rgba(79,142,255,0.4)' : 'var(--border)'}`,
+      borderRadius:'var(--radius)',
+      background: thisActive ? 'rgba(79,142,255,0.05)' : 'var(--bg2)',
+      overflow:'hidden', transition:'all 0.15s',
+      marginBottom:8,
+    }}>
+      {/* Header row */}
+      <div style={{ padding:'8px 10px', display:'flex', alignItems:'center', gap:8 }}>
+        {/* Camera icon */}
+        <div style={{
+          width:28, height:28, borderRadius:'var(--radius-sm)', flexShrink:0,
+          background: inThisView ? 'rgba(79,142,255,0.2)' : 'var(--bg3)',
+          border:`1px solid ${inThisView ? 'rgba(79,142,255,0.5)' : 'var(--border)'}`,
+          display:'flex', alignItems:'center', justifyContent:'center', fontSize:14,
+          boxShadow: inThisView ? '0 0 12px rgba(79,142,255,0.3)' : 'none',
+        }}>🎥</div>
 
-      {/* ── Mode toggle ── */}
-      <div style={{ padding:'10px 10px 6px' }}>
-        <div style={{ fontSize:10, color:'#555', letterSpacing:'0.12em', marginBottom:8 }}>
-          CAMERA MODE
-        </div>
-        <button
-          onClick={() => setCameraMode(!cameraMode)}
-          style={{
-            width:'100%', padding:'10px 0',
-            background: cameraMode
-              ? 'linear-gradient(135deg,rgba(255,170,0,0.2),rgba(255,80,0,0.15))'
-              : 'rgba(255,255,255,0.04)',
-            border: `1px solid ${cameraMode ? '#ffaa00' : 'rgba(255,255,255,0.12)'}`,
-            color: cameraMode ? '#ffaa00' : '#666',
-            borderRadius:8, cursor:'pointer',
-            fontSize:12, fontFamily:'Space Mono',
-            fontWeight: cameraMode ? 700 : 400,
-            letterSpacing:'0.1em',
-            transition:'all 0.2s',
-            boxShadow: cameraMode ? '0 0 20px rgba(255,170,0,0.2)' : 'none',
-          }}
-        >
-          {cameraMode ? '🎥 CAMERA MODE ON' : '📷 ENTER CAMERA MODE'}
-        </button>
+        {/* Name */}
+        {renaming ? (
+          <input value={nameVal}
+            onChange={e=>setNameVal(e.target.value)}
+            onBlur={()=>{ updateCamera(cam.id,{name:nameVal}); setRenaming(false) }}
+            onKeyDown={e=>{ if(e.key==='Enter'){ updateCamera(cam.id,{name:nameVal}); setRenaming(false) }}}
+            autoFocus
+            style={{ flex:1, fontSize:12, fontWeight:700, padding:'2px 6px', borderRadius:3 }}
+          />
+        ) : (
+          <span onDoubleClick={()=>{ setNameVal(cam.name); setRenaming(true) }}
+            style={{ flex:1, fontSize:12, fontWeight:700, color:'var(--text0)',
+              cursor:'text', userSelect:'none' }}
+            title="Double-click to rename"
+          >{cam.name}</span>
+        )}
+
+        {/* FOV badge */}
+        <span style={{ fontSize:9, color:'var(--text3)', fontFamily:'var(--font-mono)',
+          background:'var(--bg3)', padding:'2px 6px', borderRadius:3, flexShrink:0 }}>
+          {cam.fov||50}°
+        </span>
+
+        {/* Expand */}
+        <button onClick={()=>setExpanded(!expanded)}
+          style={{ background:'none', border:'none', color:'var(--text2)', cursor:'pointer',
+            fontSize:12, padding:2, transition:'transform 0.15s',
+            transform: expanded?'rotate(0deg)':'rotate(-90deg)' }}>▾</button>
+
+        {/* Delete */}
+        {cameras.length > 1 && (
+          <button onClick={()=>removeCamera(cam.id)}
+            style={{ background:'none', border:'none', color:'var(--text3)', cursor:'pointer',
+              fontSize:12, padding:2, transition:'color 0.12s' }}
+            onMouseEnter={e=>e.currentTarget.style.color='var(--danger)'}
+            onMouseLeave={e=>e.currentTarget.style.color='var(--text3)'}
+            title="Delete camera"
+          >✕</button>
+        )}
       </div>
 
-      {cameraMode && <>
-        {/* ── Info ── */}
-        <div style={{
-          margin:'0 10px 8px',
-          padding:'8px 10px',
-          background:'rgba(255,170,0,0.05)',
-          border:'1px solid rgba(255,170,0,0.15)',
-          borderRadius:6, fontSize:10, color:'#664400', lineHeight:1.8,
-        }}>
-          <span style={{color:'#ffaa00'}}>WASD</span> fly &nbsp;·&nbsp;
-          <span style={{color:'#ffaa00'}}>Q/E</span> up/down &nbsp;·&nbsp;
-          <span style={{color:'#ffaa00'}}>Drag</span> look<br/>
-          <span style={{color:'#ffaa00'}}>Pinch</span> speed on mobile
-        </div>
+      {/* Enter / Exit camera view button */}
+      <div style={{ padding:'0 10px 8px', display:'flex', gap:6 }}>
+        {!inThisView ? (
+          <button onClick={enterCamera} style={{
+            flex:1, padding:'7px 0', borderRadius:'var(--radius-sm)',
+            background:'rgba(79,142,255,0.12)',
+            border:'1px solid rgba(79,142,255,0.35)',
+            color:'var(--accent)', fontSize:11, fontWeight:700, cursor:'pointer',
+            transition:'all 0.15s',
+            boxShadow: thisActive ? '0 0 10px rgba(79,142,255,0.2)' : 'none',
+          }}>
+            📷 Enter Camera View
+          </button>
+        ) : (
+          <button onClick={exitCamera} style={{
+            flex:1, padding:'7px 0', borderRadius:'var(--radius-sm)',
+            background:'rgba(239,68,68,0.12)',
+            border:'1px solid rgba(239,68,68,0.35)',
+            color:'var(--danger)', fontSize:11, fontWeight:700, cursor:'pointer',
+          }}>
+            ↩ Exit Camera View
+          </button>
+        )}
+      </div>
 
-        {/* ── FOV ── */}
-        <div style={{ padding:'0 10px 8px' }}>
-          <div style={{ fontSize:10, color:'#555', marginBottom:4 }}>FIELD OF VIEW</div>
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <input type="range" min={20} max={120} step={1}
-              value={fov} onChange={e => setFov(+e.target.value)}
-              style={{ flex:1, accentColor:'#ffaa00' }} />
-            <span style={{ color:'#ffaa00', fontSize:11, minWidth:34 }}>{fov}°</span>
+      {expanded && (
+        <div style={{ padding:'0 10px 12px', borderTop:'1px solid var(--border)',
+          paddingTop:10, display:'flex', flexDirection:'column', gap:8 }}>
+
+          {/* Position / Target */}
+          <Vec3Input label="Position" value={cam.position}
+            onChange={v=>updateCamera(cam.id,{position:v})} />
+          <Vec3Input label="Look At (Target)" value={cam.target}
+            onChange={v=>updateCamera(cam.id,{target:v})} />
+
+          {/* FOV */}
+          <div>
+            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
+              <span style={{ fontSize:10, color:'var(--text2)', fontWeight:600 }}>Field of View</span>
+              <span style={{ fontSize:10, fontFamily:'var(--font-mono)', color:'var(--accent)' }}>
+                {cam.fov||50}°
+              </span>
+            </div>
+            <input type="range" min={10} max={150} step={1} value={cam.fov||50}
+              onChange={e=>updateCamera(cam.id,{fov:+e.target.value})} />
+            <div style={{ display:'flex', gap:4, marginTop:5 }}>
+              {[24,35,50,70,90].map(f=>(
+                <button key={f} onClick={()=>updateCamera(cam.id,{fov:f})} style={{
+                  flex:1, padding:'3px 0', borderRadius:3, fontSize:9,
+                  background:(cam.fov||50)===f?'rgba(79,142,255,0.15)':'var(--bg3)',
+                  border:`1px solid ${(cam.fov||50)===f?'rgba(79,142,255,0.4)':'var(--border)'}`,
+                  color:(cam.fov||50)===f?'var(--accent)':'var(--text1)', cursor:'pointer',
+                }}>{f}</button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        <div style={{ height:1, background:'rgba(255,255,255,0.06)', margin:'0 10px 8px' }} />
-
-        {/* ── Camera keyframes ── */}
-        <div style={{ padding:'0 10px 8px' }}>
-          <div style={{ fontSize:10, color:'#555', letterSpacing:'0.1em', marginBottom:6 }}>
-            CAMERA KEYFRAMES
+          {/* Near / Far */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+            {[['Near Clip','near',0.01],['Far Clip','far',1000]].map(([lbl,key,def])=>(
+              <div key={key}>
+                <div style={{ fontSize:9, color:'var(--text2)', marginBottom:3 }}>{lbl}</div>
+                <input type="number" step={key==='near'?0.01:100} value={cam[key]||def}
+                  onChange={e=>updateCamera(cam.id,{[key]:parseFloat(e.target.value)||def})}
+                  style={{}} />
+              </div>
+            ))}
           </div>
-          <div style={{ display:'flex', gap:6, marginBottom:8 }}>
-            <button
-              onClick={addKey}
-              style={{
-                flex:1, padding:'7px 0',
-                background: hasKeyNow ? 'rgba(255,170,0,0.2)' : 'rgba(0,245,255,0.1)',
-                border: `1px solid ${hasKeyNow ? '#ffaa00' : '#00f5ff'}`,
-                color: hasKeyNow ? '#ffaa00' : '#00f5ff',
-                borderRadius:5, cursor:'pointer',
-                fontSize:11, fontFamily:'Space Mono',
-              }}
-            >
-              {hasKeyNow ? '◆ UPDATE' : '◆ ADD CAM KF'}
-            </button>
-            {hasKeyNow && (
-              <button
-                onClick={() => { removeCameraKeyframe(currentFrame); refreshKeys() }}
-                style={{
-                  padding:'7px 10px',
-                  background:'rgba(255,64,96,0.1)',
-                  border:'1px solid rgba(255,64,96,0.3)',
-                  color:'#ff4060', borderRadius:5,
-                  cursor:'pointer', fontSize:11,
-                }}
-              >✕</button>
+
+          {/* Keyframes */}
+          <div style={{ borderTop:'1px solid var(--border)', paddingTop:8 }}>
+            <div style={{ fontSize:10, color:'var(--text2)', fontWeight:600,
+              letterSpacing:'0.06em', marginBottom:6 }}>
+              CAMERA KEYFRAMES
+            </div>
+            <div style={{ display:'flex', gap:5, marginBottom:6 }}>
+              <button onClick={addKF} style={{
+                flex:1, padding:'6px 0', borderRadius:'var(--radius-sm)',
+                background: hasKfNow?'rgba(245,158,11,0.15)':'rgba(79,142,255,0.1)',
+                border:`1px solid ${hasKfNow?'rgba(245,158,11,0.4)':'rgba(79,142,255,0.3)'}`,
+                color:hasKfNow?'var(--warn)':'var(--accent)',
+                fontSize:11, fontWeight:600, cursor:'pointer',
+              }}>{hasKfNow?'◆ Update KF':'◆ Add KF @ '+currentFrame}</button>
+              {hasKfNow && (
+                <button onClick={()=>{removeCamKeyframe(cam.id,currentFrame);refreshKeys()}} style={{
+                  padding:'6px 10px', borderRadius:'var(--radius-sm)',
+                  background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)',
+                  color:'var(--danger)', cursor:'pointer', fontSize:11,
+                }}>✕</button>
+              )}
+            </div>
+
+            {camKeys.length>0 && (
+              <div style={{ maxHeight:100, overflow:'auto', display:'flex', flexDirection:'column', gap:2 }}>
+                {camKeys.map(({frame,data})=>(
+                  <div key={frame}
+                    onClick={()=>useStore.getState().setCurrentFrame(frame)}
+                    style={{
+                      display:'flex', justifyContent:'space-between', alignItems:'center',
+                      padding:'4px 8px', borderRadius:'var(--radius-sm)', cursor:'pointer',
+                      background:frame===currentFrame?'rgba(245,158,11,0.1)':'var(--bg1)',
+                      border:`1px solid ${frame===currentFrame?'rgba(245,158,11,0.25)':'var(--border)'}`,
+                    }}>
+                    <span style={{ fontSize:10, color:frame===currentFrame?'var(--warn)':'var(--text1)' }}>
+                      🎥 Frame {frame} · FOV {Math.round(data.fov||50)}°
+                    </span>
+                    <button onClick={e=>{e.stopPropagation();removeCamKeyframe(cam.id,frame);refreshKeys()}}
+                      style={{ background:'none',border:'none',color:'var(--text3)',cursor:'pointer',fontSize:11 }}>✕</button>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
 
-          {/* Keyframe list */}
-          {camKeys.length > 0 && (
-            <div style={{ maxHeight:100, overflow:'auto' }}>
-              {camKeys.map(({ frame, data }) => (
-                <div key={frame}
-                  onClick={() => setCurrentFrame(frame)}
-                  style={{
-                    display:'flex', justifyContent:'space-between', alignItems:'center',
-                    padding:'4px 8px', marginBottom:2, borderRadius:4,
-                    background: frame===currentFrame ? 'rgba(255,170,0,0.1)' : 'rgba(255,255,255,0.03)',
-                    border:`1px solid ${frame===currentFrame ? 'rgba(255,170,0,0.3)' : 'transparent'}`,
-                    cursor:'pointer',
-                  }}>
-                  <span style={{ fontSize:10, color:'#aaa' }}>
-                    🎥 Frame {frame} &nbsp;·&nbsp; FOV {Math.round(data.fov)}°
-                  </span>
-                  <button
-                    onClick={e => { e.stopPropagation(); removeCameraKeyframe(frame); refreshKeys() }}
-                    style={{ background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:11 }}
-                  >✕</button>
-                </div>
-              ))}
+          {/* Capture */}
+          <div style={{ borderTop:'1px solid var(--border)', paddingTop:8, display:'flex', flexDirection:'column', gap:6 }}>
+            <div style={{ fontSize:10, color:'var(--text2)', fontWeight:600, letterSpacing:'0.06em' }}>
+              RENDER OUTPUT
             </div>
-          )}
-        </div>
+            <button onClick={captureFrame} style={{
+              padding:'7px 0', borderRadius:'var(--radius-sm)',
+              background:'rgba(6,214,160,0.08)', border:'1px solid rgba(6,214,160,0.25)',
+              color:'var(--accent3)', fontSize:11, cursor:'pointer',
+            }}>📸 Capture Frame {currentFrame} as PNG</button>
 
-        <div style={{ height:1, background:'rgba(255,255,255,0.06)', margin:'0 10px 8px' }} />
-
-        {/* ── Capture ── */}
-        <div style={{ padding:'0 10px 10px' }}>
-          <div style={{ fontSize:10, color:'#555', letterSpacing:'0.1em', marginBottom:6 }}>
-            CAPTURE FROM CAMERA
-          </div>
-
-          {/* Single frame */}
-          <button
-            onClick={captureFrame}
-            style={{
-              width:'100%', padding:'8px 0', marginBottom:6,
-              background:'rgba(64,255,128,0.1)',
-              border:'1px solid rgba(64,255,128,0.3)',
-              color:'#40ff80', borderRadius:6,
-              cursor:'pointer', fontSize:11,
-              fontFamily:'Space Mono',
-            }}
-          >
-            📸 CAPTURE FRAME {currentFrame} (PNG)
-          </button>
-
-          {/* Record sequence */}
-          {!recording ? (
-            <button
-              onClick={recordSequence}
-              style={{
-                width:'100%', padding:'9px 0',
-                background:'linear-gradient(135deg,rgba(0,245,255,0.15),rgba(0,128,255,0.15))',
-                border:'1px solid rgba(0,245,255,0.35)',
-                color:'#00f5ff', borderRadius:6,
-                cursor:'pointer', fontSize:11,
-                fontFamily:'Space Mono', fontWeight:700,
-                letterSpacing:'0.08em',
-              }}
-            >
-              🎬 RECORD FULL SEQUENCE (WebM)
-            </button>
-          ) : (
-            <>
-              <div style={{ marginBottom:6 }}>
+            {!recActive ? (
+              <button onClick={recordSeq} style={{
+                padding:'8px 0', borderRadius:'var(--radius-sm)',
+                background:'linear-gradient(135deg,rgba(79,142,255,0.15),rgba(124,58,237,0.15))',
+                border:'1px solid rgba(79,142,255,0.3)',
+                color:'var(--accent)', fontSize:11, fontWeight:700, cursor:'pointer',
+                letterSpacing:'0.04em',
+              }}>🎬 Record Full Sequence (WebM)</button>
+            ) : (
+              <div>
                 <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
-                  <span style={{ fontSize:10, color:'#888' }}>Recording...</span>
-                  <span style={{ fontSize:10, color:'#00f5ff' }}>{progress}%</span>
+                  <span style={{ fontSize:10, color:'var(--text2)' }}>Recording…</span>
+                  <span style={{ fontSize:10, fontFamily:'var(--font-mono)', color:'var(--accent)' }}>{recProg}%</span>
                 </div>
-                <div style={{ height:4, background:'rgba(255,255,255,0.08)', borderRadius:2 }}>
-                  <div style={{
-                    height:'100%', width:`${progress}%`,
-                    background:'linear-gradient(90deg,#00f5ff,#0055ff)',
-                    borderRadius:2, transition:'width 0.3s',
-                  }} />
+                <div style={{ height:4, background:'var(--bg3)', borderRadius:2, marginBottom:6 }}>
+                  <div style={{ height:'100%', width:`${recProg}%`, borderRadius:2,
+                    background:'linear-gradient(90deg,var(--accent),var(--accent2))', transition:'width 0.3s' }}/>
                 </div>
+                <button onClick={()=>cancelRef.current=true} style={{
+                  width:'100%', padding:'6px 0', borderRadius:'var(--radius-sm)',
+                  background:'rgba(239,68,68,0.08)', border:'1px solid rgba(239,68,68,0.2)',
+                  color:'var(--danger)', fontSize:11, cursor:'pointer',
+                }}>⏹ Cancel</button>
               </div>
-              <button
-                onClick={() => { cancelRecord.current = true }}
-                style={{
-                  width:'100%', padding:'8px 0',
-                  background:'rgba(255,64,96,0.1)',
-                  border:'1px solid rgba(255,64,96,0.3)',
-                  color:'#ff4060', borderRadius:6,
-                  cursor:'pointer', fontSize:11,
-                  fontFamily:'Space Mono',
-                }}
-              >⏹ CANCEL</button>
-            </>
-          )}
+            )}
+          </div>
         </div>
-      </>}
+      )}
+    </div>
+  )
+}
+
+// ── Main Panel ─────────────────────────────────────────────────────────────────
+export default function CameraMode() {
+  const { cameras, activeCameraId, inCameraView, addCamera, setActiveCameraId, setInCameraView } = useStore()
+
+  const addNewCamera = () => {
+    const id  = UID()
+    const n   = cameras.length + 1
+    // Place new camera offset from current active
+    const base = cameras.find(c=>c.id===activeCameraId)||cameras[0]
+    const pos  = base
+      ? [base.position[0]+n*1.5, base.position[1], base.position[2]+n*0.5]
+      : [5,3,5]
+    addCamera({
+      id, name:`Camera ${n}`,
+      position:pos, target:[0,0,0], fov:50, near:0.01, far:1000,
+    })
+    setActiveCameraId(id)
+  }
+
+  return (
+    <div style={{ padding:12, display:'flex', flexDirection:'column', gap:8,
+      overflow:'auto', maxHeight:'100%' }}>
+
+      {/* Header + Add button */}
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <div>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--text0)' }}>
+            Cameras <span style={{ fontSize:11, color:'var(--text3)',
+              background:'var(--bg3)', padding:'1px 6px', borderRadius:3,
+              marginLeft:4 }}>{cameras.length}</span>
+          </div>
+          <div style={{ fontSize:10, color:'var(--text2)', marginTop:2 }}>
+            {inCameraView ? '🎥 In camera view' : 'Free orbit mode'}
+          </div>
+        </div>
+        <button onClick={addNewCamera} style={{
+          padding:'7px 12px', borderRadius:'var(--radius-sm)',
+          background:'rgba(79,142,255,0.12)', border:'1px solid rgba(79,142,255,0.3)',
+          color:'var(--accent)', fontSize:11, fontWeight:700, cursor:'pointer',
+          transition:'all 0.15s',
+        }}>+ Add Camera</button>
+      </div>
+
+      {/* Status bar */}
+      {inCameraView && (
+        <div style={{
+          padding:'8px 12px', borderRadius:'var(--radius-sm)',
+          background:'rgba(79,142,255,0.08)', border:'1px solid rgba(79,142,255,0.25)',
+          fontSize:11, color:'var(--accent)',
+          display:'flex', alignItems:'center', justifyContent:'space-between',
+          animation:'fadeUp 0.2s ease',
+        }}>
+          <span>🎥 Rendering through {cameras.find(c=>c.id===activeCameraId)?.name}</span>
+          <button onClick={()=>setInCameraView(false)} style={{
+            padding:'3px 8px', borderRadius:3,
+            background:'rgba(239,68,68,0.12)', border:'1px solid rgba(239,68,68,0.3)',
+            color:'var(--danger)', fontSize:10, cursor:'pointer',
+          }}>Exit ↩</button>
+        </div>
+      )}
+
+      {/* Controls hint */}
+      {inCameraView && (
+        <div style={{
+          padding:'8px 10px', borderRadius:'var(--radius-sm)',
+          background:'var(--bg2)', border:'1px solid var(--border)',
+          fontSize:10, color:'var(--text2)', lineHeight:1.8,
+        }}>
+          <span style={{color:'var(--warn)',fontWeight:600}}>WASD</span> fly &nbsp;
+          <span style={{color:'var(--warn)',fontWeight:600}}>Q/E</span> up/down &nbsp;
+          <span style={{color:'var(--warn)',fontWeight:600}}>Drag</span> look around &nbsp;
+          <span style={{color:'var(--warn)',fontWeight:600}}>Scroll</span> speed
+        </div>
+      )}
+
+      {/* Camera cards */}
+      {cameras.map(cam => (
+        <CameraCard key={cam.id} cam={cam}
+          isActive={cam.id===activeCameraId}
+          isInView={cam.id===activeCameraId&&inCameraView} />
+      ))}
+
+      {/* Tips */}
+      <div style={{
+        padding:'10px 12px', borderRadius:'var(--radius-sm)',
+        background:'var(--bg2)', border:'1px solid var(--border)',
+        fontSize:10, color:'var(--text3)', lineHeight:1.8,
+      }}>
+        💡 <b style={{color:'var(--text2)'}}>Tips:</b><br/>
+        • Double-click camera name to rename<br/>
+        • Add keyframes to animate camera path<br/>
+        • Use FOV presets: 24mm/35mm/50mm feel<br/>
+        • Record Sequence captures from camera POV
+      </div>
     </div>
   )
 }
