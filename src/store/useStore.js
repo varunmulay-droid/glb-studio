@@ -133,6 +133,24 @@ const useStore = create(
     cameraPosition: [5, 3, 5],
     setCameraPosition: (pos) => set(state => { state.cameraPosition = pos }),
 
+    // ── Camera System (multi-camera) ─────────────────────────────────
+    cameras: [
+      { id:'cam_1', name:'Camera 1', position:[5,3,5], target:[0,0,0], fov:50, near:0.01, far:1000 }
+    ],
+    activeCameraId: null,
+    inCameraView: false,
+    addCamera: (cam) => set(state => ({ cameras: [...state.cameras, cam] })),
+    removeCamera: (id) => set(state => ({
+      cameras: state.cameras.filter(c => c.id !== id),
+      activeCameraId: state.activeCameraId === id ? null : state.activeCameraId,
+      inCameraView: state.activeCameraId === id ? false : state.inCameraView,
+    })),
+    updateCamera: (id, props) => set(state => ({
+      cameras: state.cameras.map(c => c.id === id ? { ...c, ...props } : c)
+    })),
+    setActiveCameraId: (id) => set(() => ({ activeCameraId: id })),
+    setInCameraView: (v) => set(() => ({ inCameraView: v })),
+
     // ── Recording ────────────────────────────────────────────────────
     recordedFrames: [],
     isExporting: false,
