@@ -1,190 +1,215 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import useStore from '../store/useStore'
 
-const S = {
-  bar: {
-    position: 'relative', zIndex: 300,
-    display: 'flex', alignItems: 'center', gap: 2,
-    padding: '0 10px',
-    height: 46,
-    background: 'var(--bg1)',
-    borderBottom: '1px solid var(--border)',
-    boxShadow: '0 1px 0 rgba(255,255,255,0.04)',
-    overflowX: 'auto', overflowY: 'hidden',
-    flexShrink: 0,
-  },
-  brand: {
-    fontFamily: 'var(--font-brand)',
-    fontSize: 15, fontWeight: 800,
-    letterSpacing: '-0.01em',
-    color: 'var(--text0)',
-    marginRight: 8,
-    whiteSpace: 'nowrap',
-    userSelect: 'none',
-  },
-  div: {
-    width: 1, height: 20,
-    background: 'var(--border)',
-    margin: '0 6px', flexShrink: 0,
-  },
-}
-
-function ToolBtn({ icon, label, active, onClick, color, shortcut }) {
-  const [hover, setHover] = useState(false)
+function Btn({ icon, label, active, onClick, color, title, shortcut, danger }) {
+  const [h, setH] = useState(false)
+  const acc = color || (active ? 'var(--accent)' : null)
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      title={shortcut ? `${label} [${shortcut}]` : label}
+    <button onClick={onClick} title={`${title||label}${shortcut?' ['+shortcut+']':''}`}
+      onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
       style={{
-        display: 'flex', alignItems: 'center', gap: 5,
-        padding: '5px 10px',
-        borderRadius: 'var(--radius-sm)',
-        border: active
-          ? `1px solid ${color || 'var(--accent)'}44`
-          : `1px solid ${hover ? 'var(--border-hi)' : 'transparent'}`,
-        background: active
-          ? `${color || 'var(--accent)'}18`
-          : hover ? 'var(--bg3)' : 'transparent',
-        color: active ? (color || 'var(--accent)') : hover ? 'var(--text0)' : 'var(--text1)',
-        fontSize: 12, fontWeight: 500,
-        transition: 'all 0.12s',
-        whiteSpace: 'nowrap', flexShrink: 0,
-      }}
-    >
-      <span style={{ fontSize: 14, lineHeight: 1 }}>{icon}</span>
-      <span style={{ fontSize: 11 }}>{label}</span>
+        display:'flex', alignItems:'center', gap:5,
+        padding:'4px 9px', borderRadius:'var(--radius-sm)', cursor:'pointer',
+        border:`1px solid ${active?`${acc}44`:h?'var(--border-hi)':'transparent'}`,
+        background: active?`${acc}18`:h?'var(--bg3)':'transparent',
+        color: danger&&h?'var(--danger)':active?acc:h?'var(--text0)':'var(--text1)',
+        fontSize:12, fontWeight: active?600:400,
+        transition:'all 0.1s', whiteSpace:'nowrap', flexShrink:0,
+      }}>
+      <span style={{fontSize:14,lineHeight:1}}>{icon}</span>
+      {label && <span style={{fontSize:11}}>{label}</span>}
     </button>
   )
 }
 
-function IconBtn({ icon, active, onClick, title, color }) {
-  const [h, setH] = useState(false)
-  return (
-    <button onClick={onClick} title={title}
-      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{
-        width: 32, height: 32, borderRadius: 'var(--radius-sm)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        border: active ? `1px solid ${color||'var(--accent)'}44` : `1px solid ${h?'var(--border-hi)':'transparent'}`,
-        background: active ? `${color||'var(--accent)'}18` : h ? 'var(--bg3)' : 'transparent',
-        color: active ? (color||'var(--accent)') : h ? 'var(--text0)' : 'var(--text1)',
-        fontSize: 15, transition: 'all 0.12s', flexShrink: 0,
-      }}
-    >{icon}</button>
-  )
+function Divider() {
+  return <div style={{ width:1, height:20, background:'var(--border)', margin:'0 3px', flexShrink:0 }} />
 }
 
 export default function Toolbar() {
   const {
     transformMode, setTransformMode,
+    snapEnabled, setSnapEnabled,
     lightingPreset, setLightingPreset,
     isPlaying, setIsPlaying,
+    loopPlayback, setLoopPlayback,
     selectedModelId, addKeyframe, currentFrame,
     currentFrame: cf, setCurrentFrame, totalFrames,
+    undo, redo, undoStack, redoStack,
+    projectName, setProjectName, saveProject, loadProject, exportProjectJSON,
+    duplicateModel, removeModel,
+    models,
   } = useStore()
 
+  const [editName, setEditName] = useState(false)
+  const [nameVal,  setNameVal]  = useState(projectName)
+  const importRef = useRef()
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const onKey = (e) => {
+      // Skip if typing in an input
+      if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return
+      const k = e.code
+      if (k==='KeyG' && !e.ctrlKey) { setTransformMode('translate'); return }
+      if (k==='KeyR' && !e.ctrlKey) { setTransformMode('rotate');    return }
+      if (k==='KeyS' && !e.ctrlKey) { setTransformMode('scale');     return }
+      if (k==='Space') { e.preventDefault(); setIsPlaying(!useStore.getState().isPlaying); return }
+      if (k==='KeyZ' && (e.ctrlKey||e.metaKey) && !e.shiftKey) { e.preventDefault(); undo(); return }
+      if ((k==='KeyZ' && e.shiftKey && (e.ctrlKey||e.metaKey)) || (k==='KeyY' && (e.ctrlKey||e.metaKey))) { e.preventDefault(); redo(); return }
+      if (k==='KeyD' && !e.ctrlKey) { e.preventDefault(); const sel=useStore.getState().selectedModelId; if(sel) duplicateModel(sel); return }
+      if (k==='Delete'||k==='Backspace') { const sel=useStore.getState().selectedModelId; if(sel){ removeModel(sel) }; return }
+      if (k==='KeyL') { setLoopPlayback(!useStore.getState().loopPlayback); return }
+      if (k==='Tab')  { e.preventDefault(); setSnapEnabled(!useStore.getState().snapEnabled); return }
+      // Screenshot
+      if (k==='F12') { e.preventDefault(); takeScreenshot(); return }
+      // Save
+      if ((e.ctrlKey||e.metaKey) && k==='KeyS') { e.preventDefault(); const ok=saveProject(); console.log(ok?'Saved':'Save failed'); return }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const takeScreenshot = () => {
+    const canvas = document.querySelector('canvas')
+    if (!canvas) return
+    const url  = canvas.toDataURL('image/png')
+    const a    = document.createElement('a')
+    a.href=url; a.download=`screenshot_${Date.now()}.png`; a.click()
+  }
+
+  const handleImport = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    useStore.getState().importProjectJSON(file).then(ok => {
+      if (!ok) alert('Failed to import project file')
+    })
+    e.target.value = ''
+  }
+
   const tools = [
-    { id: 'translate', icon: '⊹',  label: 'Move',   short: 'G' },
-    { id: 'rotate',    icon: '↻',  label: 'Rotate', short: 'R' },
-    { id: 'scale',     icon: '⤡',  label: 'Scale',  short: 'S' },
+    { id:'translate', icon:'⊹', label:'Move',   short:'G' },
+    { id:'rotate',    icon:'↻', label:'Rotate', short:'R' },
+    { id:'scale',     icon:'⤡', label:'Scale',  short:'S' },
   ]
 
   const lights = [
-    { id: 'studio',   icon: '◎', label: 'Studio'   },
-    { id: 'outdoor',  icon: '◉', label: 'Outdoor'  },
-    { id: 'dramatic', icon: '◈', label: 'Dramatic' },
-    { id: 'neon',     icon: '◆', label: 'Neon'     },
+    { id:'studio',   icon:'◎' },
+    { id:'outdoor',  icon:'◉' },
+    { id:'dramatic', icon:'◈' },
+    { id:'neon',     icon:'◆' },
   ]
 
+  const canUndo = undoStack?.length > 0
+  const canRedo = redoStack?.length > 0
+
   return (
-    <div style={S.bar}>
-      {/* Brand */}
-      <div style={S.brand}>
-        <span style={{ color: 'var(--accent)' }}>GLB</span>
-        <span style={{ color: 'var(--text1)', fontWeight: 400 }}>Studio</span>
-      </div>
-
-      <div style={S.div} />
-
-      {/* Transform tools */}
-      <div style={{ display:'flex', gap:2, flexShrink:0 }}>
-        {tools.map(t => (
-          <ToolBtn key={t.id}
-            icon={t.icon} label={t.label} shortcut={t.short}
-            active={transformMode === t.id}
-            onClick={() => setTransformMode(t.id)}
+    <div style={{
+      position:'relative', zIndex:300, flexShrink:0,
+      display:'flex', alignItems:'center', gap:2,
+      padding:'0 8px', height:44,
+      background:'var(--bg1)', borderBottom:'1px solid var(--border)',
+      overflowX:'auto', overflowY:'hidden',
+    }}>
+      {/* Brand / Project name */}
+      <div style={{ display:'flex', alignItems:'center', gap:6, marginRight:4, flexShrink:0 }}>
+        <span style={{ fontFamily:'var(--font-brand)', fontSize:14, fontWeight:800, color:'var(--accent)', letterSpacing:'-0.01em' }}>GLB</span>
+        {editName ? (
+          <input value={nameVal}
+            onChange={e=>setNameVal(e.target.value)}
+            onBlur={()=>{ setProjectName(nameVal); setEditName(false) }}
+            onKeyDown={e=>{ if(e.key==='Enter'||e.key==='Escape'){ setProjectName(nameVal); setEditName(false) }}}
+            autoFocus
+            style={{ fontSize:12, fontWeight:600, width:120, padding:'2px 5px' }}
           />
-        ))}
+        ) : (
+          <span onDoubleClick={()=>{ setNameVal(projectName); setEditName(true) }}
+            style={{ fontSize:12, fontWeight:600, color:'var(--text1)', cursor:'text',
+              maxWidth:120, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}
+            title="Double-click to rename"
+          >{projectName}</span>
+        )}
       </div>
 
-      <div style={S.div} />
+      <Divider />
+
+      {/* Project actions */}
+      <Btn icon="💾" title="Save project" shortcut="Ctrl+S" onClick={()=>{ const ok=saveProject(); if(ok) console.log('Saved') }} />
+      <Btn icon="📂" title="Load last saved" onClick={()=>loadProject()} />
+      <Btn icon="⬇" title="Export .glbstudio" onClick={exportProjectJSON} />
+      <Btn icon="⬆" title="Import .glbstudio" onClick={()=>importRef.current?.click()} />
+      <input ref={importRef} type="file" accept=".glbstudio,.json" style={{display:'none'}} onChange={handleImport} />
+
+      <Divider />
+
+      {/* Undo / Redo */}
+      <Btn icon="↩" title="Undo" shortcut="Ctrl+Z" onClick={undo} color={canUndo?'var(--text0)':null} />
+      <Btn icon="↪" title="Redo" shortcut="Ctrl+Y" onClick={redo} color={canRedo?'var(--text0)':null} />
+
+      <Divider />
+
+      {/* Transform */}
+      {tools.map(t => (
+        <Btn key={t.id} icon={t.icon} label={t.label} shortcut={t.short}
+          active={transformMode===t.id} onClick={()=>setTransformMode(t.id)} />
+      ))}
+
+      {/* Snap toggle */}
+      <Btn icon="🧲" title="Grid snap" shortcut="Tab"
+        active={snapEnabled} onClick={()=>setSnapEnabled(!snapEnabled)}
+        color="var(--warn)" />
+
+      <Divider />
 
       {/* Playback */}
-      <div style={{ display:'flex', gap:2, alignItems:'center', flexShrink:0 }}>
-        <IconBtn icon="⏮" title="First frame" onClick={() => setCurrentFrame(0)} />
-        <IconBtn icon="◀" title="Prev frame"  onClick={() => setCurrentFrame(Math.max(0, cf-1))} />
-        <button
-          onClick={() => setIsPlaying(!isPlaying)}
-          style={{
-            width: 34, height: 34, borderRadius: 'var(--radius-sm)',
-            background: isPlaying ? 'var(--danger)' : 'var(--accent)',
-            border: 'none', color: '#fff', fontSize: 14,
-            display:'flex', alignItems:'center', justifyContent:'center',
-            flexShrink: 0, cursor: 'pointer',
-            boxShadow: isPlaying ? '0 0 12px rgba(239,68,68,0.4)' : '0 0 12px rgba(79,142,255,0.4)',
-            transition: 'all 0.15s',
-          }}
-        >{isPlaying ? '⏸' : '▶'}</button>
-        <IconBtn icon="▶" title="Next frame" onClick={() => setCurrentFrame(Math.min(totalFrames-1,cf+1))} />
-        <IconBtn icon="⏭" title="Last frame" onClick={() => setCurrentFrame(totalFrames-1)} />
+      <Btn icon="⏮" title="First frame" onClick={()=>setCurrentFrame(0)} />
+      <Btn icon="◀" title="Prev frame"  onClick={()=>setCurrentFrame(Math.max(0,cf-1))} />
+      <button onClick={()=>setIsPlaying(!isPlaying)} title={`${isPlaying?'Pause':'Play'} [Space]`}
+        style={{
+          width:34,height:34,borderRadius:'var(--radius-sm)',flexShrink:0,
+          background:isPlaying?'var(--danger)':'var(--accent)',border:'none',color:'#fff',
+          fontSize:14,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',
+          boxShadow:isPlaying?'0 0 12px rgba(239,68,68,0.4)':'0 0 12px rgba(79,142,255,0.4)',
+          transition:'all 0.15s',
+        }}>{isPlaying?'⏸':'▶'}</button>
+      <Btn icon="◀" title="Next frame"  onClick={()=>setCurrentFrame(Math.min(totalFrames-1,cf+1))} />
+      <Btn icon="⏭" title="Last frame"  onClick={()=>setCurrentFrame(totalFrames-1)} />
+      <Btn icon="🔁" title="Loop" shortcut="L" active={loopPlayback} onClick={()=>setLoopPlayback(!loopPlayback)} color="var(--accent3)" />
 
-        <div style={{
-          fontFamily: 'var(--font-mono)', fontSize: 11,
-          color: 'var(--text1)', marginLeft: 6, flexShrink: 0,
-          background: 'var(--bg3)', padding: '4px 8px',
-          borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
-        }}>
-          <span style={{ color: 'var(--text0)' }}>{String(cf).padStart(4,'0')}</span>
-          <span style={{ color: 'var(--text3)' }}>/{totalFrames}</span>
-        </div>
+      {/* Frame counter */}
+      <div style={{ fontFamily:'var(--font-mono)',fontSize:11,color:'var(--text1)',
+        background:'var(--bg3)',padding:'3px 8px',borderRadius:'var(--radius-sm)',
+        border:'1px solid var(--border)',flexShrink:0,userSelect:'none' }}>
+        <span style={{color:'var(--text0)',fontWeight:600}}>{String(cf).padStart(4,'0')}</span>
+        <span style={{color:'var(--text3)'}}>/{totalFrames}</span>
       </div>
 
-      <div style={S.div} />
+      <Divider />
 
       {/* Lighting */}
-      <div style={{ display:'flex', gap:2, flexShrink:0 }}>
-        {lights.map(l => (
-          <button key={l.id}
-            onClick={() => setLightingPreset(l.id)}
-            title={l.label}
-            style={{
-              padding: '4px 7px', borderRadius: 'var(--radius-sm)',
-              background: lightingPreset===l.id ? 'var(--bg4)' : 'transparent',
-              border: `1px solid ${lightingPreset===l.id ? 'var(--border-hi)' : 'transparent'}`,
-              color: lightingPreset===l.id ? 'var(--warn)' : 'var(--text2)',
-              fontSize: 13, cursor:'pointer', transition:'all 0.12s',
-            }}
-          >{l.icon}</button>
-        ))}
-      </div>
-
-      <div style={{ flex: 1 }} />
-
-      {/* Keyframe shortcut */}
-      {selectedModelId && (
-        <button
-          onClick={() => addKeyframe(currentFrame, selectedModelId)}
+      {lights.map(l => (
+        <button key={l.id} onClick={()=>setLightingPreset(l.id)} title={l.id}
           style={{
-            padding: '5px 12px', borderRadius: 'var(--radius-sm)',
-            background: 'rgba(245,158,11,0.12)',
-            border: '1px solid rgba(245,158,11,0.3)',
-            color: 'var(--warn)', fontSize: 11, fontWeight: 600,
-            cursor: 'pointer', flexShrink: 0, transition: 'all 0.12s',
-          }}
-        >◆ Keyframe</button>
-      )}
+            padding:'3px 7px',borderRadius:'var(--radius-sm)',cursor:'pointer',fontSize:14,
+            background:lightingPreset===l.id?'var(--bg4)':'transparent',
+            border:`1px solid ${lightingPreset===l.id?'var(--border-hi)':'transparent'}`,
+            color:lightingPreset===l.id?'var(--warn)':'var(--text2)',transition:'all 0.1s',
+            flexShrink:0,
+          }}>{l.icon}</button>
+      ))}
+
+      <div style={{flex:1}}/>
+
+      {/* Selected model actions */}
+      {selectedModelId && <>
+        <Btn icon="⧉" title="Duplicate [D]" shortcut="D" onClick={()=>duplicateModel(selectedModelId)} />
+        <Btn icon="◆" title="Add Keyframe" onClick={()=>addKeyframe(currentFrame,selectedModelId)}
+          color="var(--warn)" active={!!useStore.getState().keyframes[currentFrame]?.[selectedModelId]} />
+        <Btn icon="🗑" danger title="Delete model [Del]" onClick={()=>{ removeModel(selectedModelId) }} />
+      </>}
+
+      {/* Screenshot */}
+      <Btn icon="📷" title="Screenshot [F12]" onClick={takeScreenshot} />
     </div>
   )
 }

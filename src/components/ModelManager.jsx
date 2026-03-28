@@ -26,6 +26,7 @@ function ModelMesh({ model }) {
     selectedModelId, transformMode,
     updateModelTransform, setModelAnimations, setModelAnimPlaying,
     selectModel, currentFrame, keyframes,
+    snapEnabled, snapTranslate, snapRotate, snapScale,
   } = useStore()
 
   const isSelected = selectedModelId === model.id
@@ -153,7 +154,41 @@ function ModelMesh({ model }) {
     })
   }, [model.animationSpeed])
 
+  // ── Apply material overrides from store ──────────────────────────────────
+  useEffect(() => {
+    if (!clonedScene) return
+    const mat = model.materialOverride
+    clonedScene.traverse(child => {
+      if (!child.isMesh || !child.material) return
+      const mats = Array.isArray(child.material) ? child.material : [child.material]
+      mats.forEach(m => {
+        if (mat?.color !== undefined)     m.color?.set(mat.color)
+        if (mat?.roughness !== undefined) m.roughness = mat.roughness
+        if (mat?.metalness !== undefined) m.metalness = mat.metalness
+        if (mat?.opacity !== undefined)   { m.opacity = mat.opacity; m.transparent = mat.opacity < 1 }
+        if (mat?.wireframe !== undefined) m.wireframe = !!mat.wireframe
+        if (!mat) {
+          // Reset - use original material stored at load
+          m.wireframe = false
+          if (m.opacity !== undefined) { m.opacity=1; m.transparent=false }
+        }
+        m.needsUpdate = true
+      })
+    })
+  }, [model.materialOverride, clonedScene])
+
   // ── Tick mixer ───────────────────────────────────────────────────────────
+  // ── Shadow settings ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!clonedScene) return
+    clonedScene.traverse(child => {
+      if (child.isMesh) {
+        child.castShadow    = model.castShadow    ?? true
+        child.receiveShadow = model.receiveShadow ?? true
+      }
+    })
+  }, [model.castShadow, model.receiveShadow, clonedScene])
+
   useFrame((_, delta) => {
     mixerRef.current?.update(delta)
   })
@@ -210,6 +245,9 @@ function ModelMesh({ model }) {
           mode={transformMode}
           onObjectChange={onTransformChange}
           size={0.75}
+          translationSnap={snapEnabled ? snapTranslate : null}
+          rotationSnap={snapEnabled ? (snapRotate * Math.PI/180) : null}
+          scaleSnap={snapEnabled ? snapScale : null}
         />
       )}
     </>

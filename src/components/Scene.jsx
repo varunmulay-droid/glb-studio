@@ -106,8 +106,12 @@ function Playback() {
     if (acc.current >= 1 / (s.fps || 30)) {
       acc.current = 0
       const next = s.currentFrame + 1
-      if (next >= s.totalFrames) { s.setIsPlaying(false); s.setCurrentFrame(0) }
-      else s.setCurrentFrame(next)
+      if (next >= s.totalFrames) {
+        if (s.loopPlayback) { s.setCurrentFrame(0) }       // loop
+        else { s.setIsPlaying(false); s.setCurrentFrame(0) } // stop
+      } else {
+        s.setCurrentFrame(next)
+      }
     }
   })
   return null
