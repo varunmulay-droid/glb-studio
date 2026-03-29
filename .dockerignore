@@ -1,38 +1,13 @@
-# Git
 .git
 .gitignore
-
-# Node modules (installed fresh in Docker)
 node_modules
-
-# Build output (built inside Docker)
 dist
-
-# Dev files
-*.local
-.env*
-.env.local
-.env.development
-
-# Editor
-.vscode
-.idea
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
 *.log
 npm-debug.log*
-
-# Test / coverage
+.env*
+.DS_Store
+Thumbs.db
+.vscode
 coverage
-*.test.*
-*.spec.*
-
-# Docker dev file
 Dockerfile.dev
 docker-compose.yml
