@@ -29,7 +29,8 @@ function ModelMesh({ model }) {
     snapEnabled, snapTranslate, snapRotate, snapScale,
   } = useStore()
 
-  const isSelected = selectedModelId === model.id
+  const isSelected  = selectedModelId === model.id
+  const isRenderMode = useStore.getState().isRenderMode || useStore.getState().isExporting
 
   // ── Clone scene using SkeletonUtils for correct bone cloning ──────────────
   const clonedScene = useMemo(() => {
@@ -225,21 +226,17 @@ function ModelMesh({ model }) {
       >
         <primitive object={clonedScene} />
 
-        {/* Selection indicator */}
-        {isSelected && (
+        {/* Selection indicator — hidden during render */}
+        {isSelected && !isRenderMode && (
           <mesh rotation={[-Math.PI/2, 0, 0]}>
             <ringGeometry args={[0.85, 1.0, 48]} />
-            <meshBasicMaterial
-              color="#4f8eff"
-              transparent opacity={0.7}
-              side={THREE.DoubleSide}
-              depthWrite={false}
-            />
+            <meshBasicMaterial color="#4f8eff" transparent opacity={0.7}
+              side={THREE.DoubleSide} depthWrite={false} />
           </mesh>
         )}
       </group>
 
-      {isSelected && (
+      {isSelected && !isRenderMode && (
         <TransformControls
           object={groupRef}
           mode={transformMode}

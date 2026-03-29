@@ -36,6 +36,8 @@ export default function Toolbar() {
     selectedModelId, addKeyframe, currentFrame,
     currentFrame: cf, setCurrentFrame, totalFrames,
     undo, redo, undoStack, redoStack,
+    showGrid, setShowGrid, showGizmo, setShowGizmo,
+    showCameraObjects, setShowCameraObjects,
     projectName, setProjectName, saveProject, loadProject, exportProjectJSON,
     duplicateModel, removeModel,
     models,
@@ -207,6 +209,12 @@ export default function Toolbar() {
           color="var(--warn)" active={!!useStore.getState().keyframes[currentFrame]?.[selectedModelId]} />
         <Btn icon="🗑" danger title="Delete model [Del]" onClick={()=>{ removeModel(selectedModelId) }} />
       </>}
+
+      <Divider />
+      {/* Scene visibility toggles */}
+      <Btn icon="⊞" title="Toggle grid" active={showGrid} onClick={()=>setShowGrid(!showGrid)} />
+      <Btn icon="⊕" title="Toggle orientation gizmo" active={showGizmo} onClick={()=>setShowGizmo(!showGizmo)} />
+      <Btn icon="🎥" title="Toggle camera objects" active={showCameraObjects} onClick={()=>setShowCameraObjects(!showCameraObjects)} />
 
       {/* Screenshot */}
       <Btn icon="📷" title="Screenshot [F12]" onClick={takeScreenshot} />

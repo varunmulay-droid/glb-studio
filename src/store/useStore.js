@@ -126,6 +126,16 @@ const useStore = create(
     fps: 30,
     isPlaying: false,
     isRecording: false,
+    isRenderMode: false,      // hides ALL editor UI - grid, gizmos, selection rings, helpers
+    showGrid:      true,
+    showGizmo:     true,
+    showCameraObjects: true,
+    showContactShadows: true,
+    setIsRenderMode:        (v) => set(state => { state.isRenderMode        = v }),
+    setShowGrid:            (v) => set(state => { state.showGrid            = v }),
+    setShowGizmo:           (v) => set(state => { state.showGizmo           = v }),
+    setShowCameraObjects:   (v) => set(state => { state.showCameraObjects   = v }),
+    setShowContactShadows:  (v) => set(state => { state.showContactShadows  = v }),
     loopPlayback: false,
 
     setCurrentFrame: (f) => set(state => {
@@ -215,6 +225,10 @@ const useStore = create(
     addRecordedFrame:   (d)   => set(state => { state.recordedFrames.push(d) }),
     clearRecordedFrames:()    => set(state => { state.recordedFrames = [] }),
     setIsExporting:     (v)   => set(state => { state.isExporting    = v }),
+    renderWidth:  1920,
+    renderHeight: 1080,
+    setRenderWidth:  (v) => set(state => { state.renderWidth  = v }),
+    setRenderHeight: (v) => set(state => { state.renderHeight = v }),
     setExportProgress:  (v)   => set(state => { state.exportProgress  = v }),
     setExportedVideoUrl:(url) => set(state => { state.exportedVideoUrl = url }),
 
