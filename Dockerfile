@@ -1,39 +1,16 @@
 # GLB Animation Studio — Hugging Face Spaces
-# Port 7860, non-root user uid 1000
+# Pre-built dist/ is committed — this just serves it with nginx
+# Build time: < 30 seconds (no npm install needed)
 
-# ── Stage 1: Build ─────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM nginx:1.25-alpine
 
-WORKDIR /app
-
-# Install build tools needed for native modules
-RUN apk add --no-cache python3 make g++
-
-# Copy lockfile + package for layer caching
-COPY package.json package-lock.json* ./
-
-# Install deps — use ci for reproducible builds, fall back to install
-RUN npm ci --legacy-peer-deps 2>/dev/null || npm install --legacy-peer-deps
-
-# Copy source
-COPY . .
-
-# Build
-RUN npm run build
-
-# Verify
-RUN test -d dist && echo "✓ dist/ exists" || (echo "✗ dist/ missing!" && exit 1)
-
-# ── Stage 2: Serve ─────────────────────────────────────────────────────────────
-FROM nginx:1.25-alpine AS runner
-
-# Non-root user (HF Spaces requirement)
+# Non-root user (HF Spaces requirement: uid 1000)
 RUN addgroup -g 1000 appgroup && \
     adduser  -u 1000 -G appgroup -s /bin/sh -D appuser
 
-# Deploy built assets
+# Copy pre-built React app
 RUN rm -rf /usr/share/nginx/html/*
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY dist/ /usr/share/nginx/html/
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # Fix permissions for non-root nginx
@@ -53,7 +30,7 @@ RUN mkdir -p /var/cache/nginx/client_temp \
 USER appuser
 EXPOSE 7860
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- http://localhost:7860/ || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]
