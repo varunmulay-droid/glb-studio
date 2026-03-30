@@ -13,26 +13,62 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
 
-      - name: Verify HF_TOKEN secret is set
+      - name: Patch README for HF Spaces
         run: |
-          if [ -z "${{ secrets.HF_TOKEN }}" ]; then
-            echo "ERROR: HF_TOKEN secret is not set."
-            echo "Go to: github.com/varunmulay-droid/glb-studio/settings/secrets/actions"
-            echo "Add secret named HF_TOKEN with your Hugging Face write token."
-            exit 1
-          fi
-          echo "HF_TOKEN found."
+          cat > README.md << 'README'
+          ---
+          title: Glb Studio
+          emoji: 🎬
+          colorFrom: blue
+          colorTo: indigo
+          sdk: docker
+          app_port: 7860
+          pinned: false
+          license: mit
+          short_description: GLB 3D Animation Studio — Three.js + React
+          ---
 
-      - name: Push to Hugging Face Spaces
+          # 🎬 GLB Animation Studio
+
+          Professional browser-based 3D animation studio for GLB/GLTF models.
+
+          ## Features
+          - GLB model loading, transform controls, keyframe animation
+          - Multi-camera system with fly controls
+          - Cannon.js physics engine
+          - AI scene controller (OpenRouter)
+          - Clean render mode for video export
+          - Mobile optimised
+
+          ## Tech Stack
+          React 18 · Three.js · React Three Fiber · Zustand · nginx · Docker
+          README
+
+      - name: Configure git
         run: |
           git config --global user.email "deploy@glbstudio.dev"
           git config --global user.name  "GLB Studio Deploy"
+
+      - name: Push to Hugging Face Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "❌ HF_TOKEN secret not set!"
+            echo "Go to: github.com/varunmulay-droid/glb-studio/settings/secrets/actions"
+            echo "Add: HF_TOKEN = your HF write token"
+            exit 1
+          fi
           git remote add hfspace \
-            "https://varunm2004:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/varunm2004/glb-studio" \
+            "https://varunm2004:${HF_TOKEN}@huggingface.co/spaces/varunm2004/glb-studio" \
             2>/dev/null || \
           git remote set-url hfspace \
-            "https://varunm2004:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/varunm2004/glb-studio"
+            "https://varunm2004:${HF_TOKEN}@huggingface.co/spaces/varunm2004/glb-studio"
+
+          # Stage the README patch
+          git add README.md
+          git diff --cached --quiet || git commit -m "ci: patch README for HF Spaces"
+
           git push hfspace HEAD:main --force
-          echo "Deployed to https://huggingface.co/spaces/varunm2004/glb-studio"
+          echo "✅ Deployed → https://huggingface.co/spaces/varunm2004/glb-studio"
