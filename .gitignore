@@ -3,8 +3,8 @@ node_modules/
 .pnp
 .pnp.js
 
-# Build output - dist/ is committed for HF Spaces
-#dist/
+# Build output
+dist/
 build/
 
 # Environment variables
