@@ -9,31 +9,29 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout full repo
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: false
 
-      - name: Push to Hugging Face Spaces
+      - name: Verify dist/ exists
+        run: |
+          ls dist/assets/ || (echo "ERROR: dist/ not found in repo" && exit 1)
+          echo "dist/ contents:"
+          ls -lh dist/assets/
+
+      - name: Push to HF Spaces
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           git config user.email "ci@glbstudio.dev"
-          git config user.name "GLB Studio CI"
+          git config user.name "GLB Deploy"
 
-          # Add HF as remote
           git remote add hf \
             "https://varunm2004:${HF_TOKEN}@huggingface.co/spaces/varunm2004/glb-studio" \
             2>/dev/null || \
           git remote set-url hf \
             "https://varunm2004:${HF_TOKEN}@huggingface.co/spaces/varunm2004/glb-studio"
 
-          # Verify dist/ exists in our repo
-          ls -la dist/assets/ || (echo "ERROR: dist/ missing!" && exit 1)
-          echo "dist/ files:"
-          ls dist/assets/
-
-          # Force push our entire repo to HF
           git push hf HEAD:main --force
-          echo "✅ Pushed to HF Spaces"
+          echo "✅ Deployed to https://huggingface.co/spaces/varunm2004/glb-studio"
