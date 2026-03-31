@@ -286,7 +286,7 @@ export default function PropertiesPanel() {
           {[['Cast Shadow','castShadow'],['Receive Shadow','receiveShadow']].map(([lbl,key])=>(
             <div key={key} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <span style={{fontSize:11,color:'var(--text1)'}}>{lbl}</span>
-              <button onClick={()=>updateModelTransform(model.id,key,!model[key]??true)} style={{
+              <button onClick={()=>updateModelTransform(model.id,key,!(model[key]??true))} style={{
                 width:36,height:20,borderRadius:10,cursor:'pointer',position:'relative',
                 background:(model[key]??true)?'var(--accent)':'var(--bg4)',border:'none',
                 transition:'background 0.2s',

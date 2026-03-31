@@ -15,12 +15,8 @@ short_description: GLB 3D Animation Studio — Three.js + React
 Professional browser-based 3D animation studio for GLB/GLTF models.
 
 ## Features
-- GLB/GLTF model loading, transform controls, keyframe animation
-- Multi-camera system with fly controls and camera path animation
-- Cannon.js physics engine (gravity, impulse, damping)
-- AI scene controller via OpenRouter (free models, auto-retry)
-- Undo/redo, project save/load, material editor, clean render mode
-- Video export (WebM) + PNG sequence, mobile optimised
-
-## Tech Stack
-React 18 · Vite · Three.js · React Three Fiber · Zustand · nginx · Docker
+- GLB/GLTF loading · Transform controls · Keyframe animation
+- Multi-camera system with fly controls
+- Cannon.js physics · AI scene controller
+- Clean render mode · Video/PNG export
+- Mobile optimised
