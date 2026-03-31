@@ -1,0 +1,10 @@
+# Tell HF/git these are regular files, NOT LFS objects
+dist/assets/*.js    binary
+dist/assets/*.css   binary
+dist/index.html     text
+*.jsx               text
+*.js                text
+*.json              text
+*.css               text
+*.md                text
+*.html              text
