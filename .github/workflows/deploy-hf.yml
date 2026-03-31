@@ -1,4 +1,4 @@
-name: Deploy to HF Spaces
+name: Sync to HF Spaces
 
 on:
   push:
@@ -6,69 +6,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout full repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Patch README for HF Spaces
-        run: |
-          cat > README.md << 'README'
-          ---
-          title: Glb Studio
-          emoji: 🎬
-          colorFrom: blue
-          colorTo: indigo
-          sdk: docker
-          app_port: 7860
-          pinned: false
-          license: mit
-          short_description: GLB 3D Animation Studio — Three.js + React
-          ---
-
-          # 🎬 GLB Animation Studio
-
-          Professional browser-based 3D animation studio for GLB/GLTF models.
-
-          ## Features
-          - GLB model loading, transform controls, keyframe animation
-          - Multi-camera system with fly controls
-          - Cannon.js physics engine
-          - AI scene controller (OpenRouter)
-          - Clean render mode for video export
-          - Mobile optimised
-
-          ## Tech Stack
-          React 18 · Three.js · React Three Fiber · Zustand · nginx · Docker
-          README
-
-      - name: Configure git
-        run: |
-          git config --global user.email "deploy@glbstudio.dev"
-          git config --global user.name  "GLB Studio Deploy"
+          lfs: false
 
       - name: Push to Hugging Face Spaces
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          if [ -z "$HF_TOKEN" ]; then
-            echo "❌ HF_TOKEN secret not set!"
-            echo "Go to: github.com/varunmulay-droid/glb-studio/settings/secrets/actions"
-            echo "Add: HF_TOKEN = your HF write token"
-            exit 1
-          fi
-          git remote add hfspace \
+          git config user.email "ci@glbstudio.dev"
+          git config user.name "GLB Studio CI"
+
+          # Add HF as remote
+          git remote add hf \
             "https://varunm2004:${HF_TOKEN}@huggingface.co/spaces/varunm2004/glb-studio" \
             2>/dev/null || \
-          git remote set-url hfspace \
+          git remote set-url hf \
             "https://varunm2004:${HF_TOKEN}@huggingface.co/spaces/varunm2004/glb-studio"
 
-          # Stage the README patch
-          git add README.md
-          git diff --cached --quiet || git commit -m "ci: patch README for HF Spaces"
+          # Verify dist/ exists in our repo
+          ls -la dist/assets/ || (echo "ERROR: dist/ missing!" && exit 1)
+          echo "dist/ files:"
+          ls dist/assets/
 
-          git push hfspace HEAD:main --force
-          echo "✅ Deployed → https://huggingface.co/spaces/varunm2004/glb-studio"
+          # Force push our entire repo to HF
+          git push hf HEAD:main --force
+          echo "✅ Pushed to HF Spaces"
