@@ -34,3 +34,4 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- http://localhost:7860/ || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]
+
