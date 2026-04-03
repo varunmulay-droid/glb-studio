@@ -83,8 +83,8 @@ export default function Toolbar() {
   const handleImport = (e) => {
     const file = e.target.files[0]
     if (!file) return
-    useStore.getState().importProjectJSON(file).then(ok => {
-      if (!ok) alert('Failed to import project file')
+    useStore.getState().importProjectJSON(file).then(result => {
+      if (!result?.ok) console.warn('Import failed:', result?.error)
     })
     e.target.value = ''
   }

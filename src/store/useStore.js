@@ -342,14 +342,94 @@ const useStore = create(
       } catch(e) { console.error('Load failed', e); return false }
     },
 
+    // Export project JSON (metadata only, no model blobs)
     exportProjectJSON: () => {
-      const s    = get()
-      const data = JSON.stringify({ version:2, projectName:s.projectName, models:s.models, keyframes:s.keyframes, cameras:s.cameras, totalFrames:s.totalFrames, fps:s.fps, lightingPreset:s.lightingPreset }, null, 2)
-      const blob = new Blob([data], { type:'application/json' })
+      const s = get()
+      const data = {
+        version: 3,
+        projectName: s.projectName,
+        models: s.models.map(m => ({
+          id:m.id, url:m.url, name:m.name,
+          position:m.position, rotation:m.rotation, scale:m.scale,
+          visible:m.visible, activeAnimation:m.activeAnimation,
+          animationSpeed:m.animationSpeed, animationPlaying:m.animationPlaying,
+          materialOverride:m.materialOverride,
+          castShadow:m.castShadow, receiveShadow:m.receiveShadow,
+        })),
+        keyframes:      s.keyframes,
+        cameras:        s.cameras,
+        totalFrames:    s.totalFrames,
+        fps:            s.fps,
+        loopPlayback:   s.loopPlayback,
+        lightingPreset: s.lightingPreset,
+        skybox:         s.skybox,
+        physicsEnabled: s.physicsEnabled,
+        gravity:        s.gravity,
+        modelPhysics:   s.modelPhysics,
+      }
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type:'application/json' })
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
       a.href=url; a.download=`${s.projectName.replace(/\s+/g,'_')}.glbstudio`; a.click()
       URL.revokeObjectURL(url)
+    },
+
+    // Export full project bundle — fetches model blobs and packs everything
+    exportProjectBundle: async (onProgress) => {
+      const s = get()
+      onProgress?.('Preparing bundle…', 0)
+
+      // Collect model data (fetch blob if URL is external)
+      const modelEntries = []
+      for (let i = 0; i < s.models.length; i++) {
+        const m = s.models[i]
+        onProgress?.(`Packing model ${i+1}/${s.models.length}: ${m.name}`, Math.round((i/s.models.length)*60))
+        let modelData = { ...m }
+        // Try to fetch and embed blob for local/external URLs
+        if (m.url && !m.url.startsWith('data:')) {
+          try {
+            const res  = await fetch(m.url)
+            const buf  = await res.arrayBuffer()
+            const b64  = btoa(String.fromCharCode(...new Uint8Array(buf)))
+            const ext  = m.url.split('.').pop().split('?')[0].toLowerCase()
+            const mime = ext === 'glb' ? 'model/gltf-binary' : 'model/gltf+json'
+            modelData.embeddedBlob = `data:${mime};base64,${b64}`
+          } catch(e) {
+            console.warn(`Could not fetch model ${m.name}:`, e)
+            // Keep original URL as fallback
+          }
+        }
+        modelEntries.push(modelData)
+      }
+
+      onProgress?.('Writing bundle…', 85)
+      const bundle = {
+        version:        3,
+        bundleDate:     new Date().toISOString(),
+        projectName:    s.projectName,
+        models:         modelEntries,
+        keyframes:      s.keyframes,
+        cameras:        s.cameras,
+        totalFrames:    s.totalFrames,
+        fps:            s.fps,
+        loopPlayback:   s.loopPlayback,
+        lightingPreset: s.lightingPreset,
+        skybox:         s.skybox,
+        physicsEnabled: s.physicsEnabled,
+        gravity:        s.gravity,
+        modelPhysics:   s.modelPhysics,
+      }
+
+      onProgress?.('Saving file…', 95)
+      const json = JSON.stringify(bundle)
+      const blob = new Blob([json], { type:'application/json' })
+      const url  = URL.createObjectURL(blob)
+      const a    = document.createElement('a')
+      const safeName = s.projectName.replace(/[^a-z0-9_-]/gi,'_')
+      a.href=url; a.download=`${safeName}_bundle.glbstudio`; a.click()
+      URL.revokeObjectURL(url)
+      onProgress?.('Done!', 100)
+      return { models: modelEntries.length, size: blob.size }
     },
 
     importProjectJSON: (file) => new Promise((resolve) => {
@@ -357,19 +437,39 @@ const useStore = create(
       reader.onload = e => {
         try {
           const data = JSON.parse(e.target.result)
-          set(state => {
-            state.projectName   = data.projectName  || 'Imported'
-            state.models        = data.models        || []
-            state.keyframes     = data.keyframes     || {}
-            state.cameras       = data.cameras       || []
-            state.totalFrames   = data.totalFrames   || 300
-            state.fps           = data.fps           || 30
-            state.lightingPreset= data.lightingPreset||'studio'
-            state.undoStack     = []
-            state.redoStack     = []
+          // Handle embedded blobs (v3 bundle): use blob URL from embedded data
+          const models = (data.models || []).map(m => {
+            if (m.embeddedBlob) {
+              // Convert embedded base64 back to object URL
+              const [header, b64] = m.embeddedBlob.split(',')
+              const mime = header.match(/data:([^;]+)/)?.[1] || 'model/gltf-binary'
+              const binary = atob(b64)
+              const bytes  = new Uint8Array(binary.length)
+              for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i)
+              const blob = new Blob([bytes], { type: mime })
+              return { ...m, url: URL.createObjectURL(blob), embeddedBlob: undefined }
+            }
+            return m
           })
-          resolve(true)
-        } catch { resolve(false) }
+          set(state => {
+            state.projectName    = data.projectName    || 'Imported'
+            state.models         = models
+            state.keyframes      = data.keyframes      || {}
+            state.cameras        = data.cameras        || [{ id:'cam_1',name:'Camera 1',position:[5,3,5],target:[0,0,0],fov:50,near:0.01,far:1000 }]
+            state.totalFrames    = data.totalFrames    || 300
+            state.fps            = data.fps            || 30
+            state.loopPlayback   = data.loopPlayback   || false
+            state.lightingPreset = data.lightingPreset || 'studio'
+            state.skybox         = data.skybox         || { type:'preset', value:null, bgColor:'#080810', showBg:false }
+            state.physicsEnabled = data.physicsEnabled || false
+            state.gravity        = data.gravity        ?? -9.82
+            state.modelPhysics   = data.modelPhysics   || {}
+            state.selectedModelId = null
+            state.undoStack      = []
+            state.redoStack      = []
+          })
+          resolve({ ok: true, modelCount: models.length, hasBlobs: models.some(m=>m.url?.startsWith('blob:')) })
+        } catch(err) { resolve({ ok:false, error: err.message }) }
       }
       reader.readAsText(file)
     }),
