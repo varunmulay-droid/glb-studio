@@ -126,14 +126,10 @@ function makeBody(mesh, props = {}) {
     )))
   }
 
-  // Place at mesh world position (accounting for bounding box center)
+  // Place at mesh world position exactly — no offsets that cause drift
   const wp = new THREE.Vector3()
   mesh.getWorldPosition(wp)
-  body.position.set(
-    wp.x + cx.x,
-    wp.y + cx.y + size.y/2 + centerOfMassY,
-    wp.z + cx.z,
-  )
+  body.position.set(wp.x, wp.y + size.y/2, wp.z)
   const wq = new THREE.Quaternion()
   mesh.getWorldQuaternion(wq)
   body.quaternion.set(wq.x, wq.y, wq.z, wq.w)
@@ -266,17 +262,12 @@ function Ticker() {
       accum.current -= FIXED
     }
 
-    // Sync physics → Three.js meshes → store
+    // Sync physics → Three.js meshes ONLY (no store writeback - causes feedback loop)
     bodies.forEach((body, id) => {
       const mesh = meshes.get(id)
       if (!mesh || body.type === CANNON.Body.STATIC) return
       mesh.position.set(body.position.x, body.position.y, body.position.z)
       mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w)
-      // Write back to store so UI reflects real position
-      useStore.getState().updateModelTransform(id, 'position', [body.position.x, body.position.y, body.position.z])
-      useStore.getState().updateModelTransform(id, 'rotation', [
-        mesh.rotation.x, mesh.rotation.y, mesh.rotation.z,
-      ])
     })
   })
 
