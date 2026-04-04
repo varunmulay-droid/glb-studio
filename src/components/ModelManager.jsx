@@ -13,6 +13,7 @@ import { useGLTF, useAnimations, TransformControls } from '@react-three/drei'
 import { useFrame }   from '@react-three/fiber'
 import * as THREE     from 'three'
 import useStore       from '../store/useStore'
+import { registerPhysicsObject, unregisterPhysicsObject } from './PhysicsEngine'
 
 function ModelMesh({ model }) {
   const groupRef     = useRef()
@@ -154,6 +155,26 @@ function ModelMesh({ model }) {
       a.setEffectiveTimeScale(model.animationSpeed || 1)
     })
   }, [model.animationSpeed])
+
+  // ── Register with physics engine when model loads ──────────────────────────
+  useEffect(() => {
+    if (!groupRef.current) return
+    const s = useStore.getState()
+    if (!s.physicsEnabled) return
+    const props = s.modelPhysics[model.id] || {}
+    registerPhysicsObject(model.id, groupRef.current, {
+      mass:           props.mass           ?? 1,
+      type:           props.type           ?? 'dynamic',
+      linearDamping:  props.damping        ?? 0.3,
+      angularDamping: props.angularDamping ?? 0.5,
+      friction:       props.friction       ?? 0.4,
+      restitution:    props.restitution    ?? 0.2,
+      centerOfMassY:  props.centerOfMassY  ?? 0,
+      collisionShape: props.collisionShape ?? 'box',
+      ccdRadius:      props.ccdRadius      ?? 0,
+    })
+    return () => unregisterPhysicsObject(model.id)
+  }, [model.id, model.url, useStore.getState().physicsEnabled])
 
   // ── Apply material overrides from store ──────────────────────────────────
   useEffect(() => {

@@ -36,6 +36,50 @@ function LightingRig() {
   )
 }
 
+// ── Dynamic scene lights from store ──────────────────────────────────────────
+function SceneLights() {
+  const lights = useStore(s => s.sceneLights) || []
+  return (
+    <>
+      {lights.filter(l=>l.visible).map(l => {
+        const pos  = l.position || [0,5,0]
+        const tgt  = l.target   || [0,0,0]
+        const col  = l.color    || '#ffffff'
+        const int  = l.intensity ?? 1
+        const sms  = l.shadowMapSize || 1024
+
+        if (l.type==='ambient') return (
+          <ambientLight key={l.id} color={col} intensity={int} />
+        )
+        if (l.type==='hemisphere') return (
+          <hemisphereLight key={l.id} args={[l.skyColor||'#88aaff', l.groundColor||'#443322', int]} />
+        )
+        if (l.type==='directional') return (
+          <directionalLight key={l.id} color={col} intensity={int}
+            position={pos} castShadow={!!l.castShadow}
+            shadow-mapSize={[sms,sms]} shadow-camera-near={0.1} shadow-camera-far={200}
+            shadow-camera-left={-30} shadow-camera-right={30} shadow-camera-top={30} shadow-camera-bottom={-30}>
+            {l.castShadow && <directionalLightHelper args={[null,1]} />}
+          </directionalLight>
+        )
+        if (l.type==='point') return (
+          <pointLight key={l.id} color={col} intensity={int} position={pos}
+            distance={l.distance||0} castShadow={!!l.castShadow}
+            shadow-mapSize={[sms,sms]} />
+        )
+        if (l.type==='spot') return (
+          <spotLight key={l.id} color={col} intensity={int} position={pos}
+            angle={l.angle||0.4} penumbra={l.penumbra||0.2}
+            distance={l.distance||0} castShadow={!!l.castShadow}
+            shadow-mapSize={[sms,sms]}
+            target-position={tgt} />
+        )
+        return null
+      })}
+    </>
+  )
+}
+
 // ── Skybox ──────────────────────────────────────────────────────────────────
 function SkyboxApplier() {
   const skybox = useStore(s => s.skybox) || {}
@@ -354,6 +398,7 @@ export default function Scene({ canvasRef }) {
           <SkyboxApplier />
           <PresetEnv />
           <LightingRig />
+          <SceneLights />
           <Floor />
           <Deselect />
           <ModelManager />

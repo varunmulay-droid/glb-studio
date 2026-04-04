@@ -241,12 +241,32 @@ const useStore = create(
     // ── Physics ─────────────────────────────────────────────────────────
     physicsEnabled: false,
     gravity:        -9.82,
-    modelPhysics:   {},
+    modelPhysics:   {},  // { [id]: { mass, damping, angularDamping, type, friction, restitution, staticFriction, centerOfMassY, collisionShape, constantForce, ccdRadius } }
+    physicsConfig:  {
+      globalFriction:    0.4,
+      globalRestitution: 0.3,
+      substeps:          4,
+    },
+    physicsWind:    { x:0, y:0, z:0 },   // global wind force vector
+
     setPhysicsEnabled: (v) => set(state => { state.physicsEnabled = v }),
     setGravity:        (v) => set(state => { state.gravity        = v }),
+    setPhysicsConfig:  (c) => set(state => { state.physicsConfig  = { ...state.physicsConfig, ...c } }),
+    setPhysicsWind:    (w) => set(state => { state.physicsWind    = { ...state.physicsWind,   ...w } }),
     setModelPhysics: (id, props) => set(state => {
       state.modelPhysics[id] = { ...state.modelPhysics[id], ...props }
     }),
+
+    // ── Scene Lights ──────────────────────────────────────────────────────────
+    sceneLights: [
+      // Default: one fill light
+      { id:'light_ambient', type:'ambient', name:'Ambient', color:'#ffffff', intensity:0.4, visible:true, position:[0,10,0], castShadow:false },
+    ],
+    addSceneLight: (light) => set(state => { state.sceneLights = [...state.sceneLights, light] }),
+    removeSceneLight: (id) => set(state => { state.sceneLights = state.sceneLights.filter(l=>l.id!==id) }),
+    updateSceneLight: (id, props) => set(state => ({
+      sceneLights: state.sceneLights.map(l => l.id===id ? { ...l, ...props } : l)
+    })),
 
     // ── AI ──────────────────────────────────────────────────────────────
     aiMessages:         [],

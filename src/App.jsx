@@ -10,6 +10,7 @@ import CameraMode      from './components/CameraMode'
 import SkyboxPanel     from './components/SkyboxPanel'
 import PhysicsPanel    from './components/PhysicsPanel'
 import AIController    from './components/AIController'
+import LightsPanel     from './components/LightsPanel'
 import ProjectPanel    from './components/ProjectPanel'
 import useStore        from './store/useStore'
 
@@ -20,6 +21,7 @@ const TABS = [
   { id:'camera',     icon:'🎥',  label:'Camera'     },
   { id:'skybox',     icon:'🌐',  label:'Skybox'     },
   { id:'physics',    icon:'⚡',  label:'Physics'    },
+  { id:'lights',     icon:'💡',  label:'Lights'     },
   { id:'ai',         icon:'✦',   label:'AI'         },
   { id:'project',    icon:'🗂',   label:'Project'    },
   { id:'export',     icon:'▶',   label:'Export'     },
@@ -38,6 +40,7 @@ function PanelContent({ id, canvasRef }) {
       {id==='skybox'     && <SkyboxPanel />}
       {id==='physics'    && <PhysicsPanel />}
       {id==='ai'         && <AIController />}
+      {id==='lights'     && <LightsPanel />}
       {id==='project'    && <ProjectPanel />}
       {id==='export'     && <ExportPanel canvasRef={canvasRef} />}
     </div>
