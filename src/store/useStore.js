@@ -374,37 +374,79 @@ const useStore = create(
       URL.revokeObjectURL(url)
     },
 
-    // Export full project bundle — fetches model blobs and packs everything
-    exportProjectBundle: async (onProgress) => {
-      const s = get()
-      onProgress?.('Preparing bundle…', 0)
+    // ── Safe base64 encode — handles large buffers without stack overflow ──
+    _arrayBufferToBase64: (buffer) => {
+      const bytes  = new Uint8Array(buffer)
+      const CHUNK  = 8192
+      let   result = ''
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        result += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+      }
+      return btoa(result)
+    },
 
-      // Collect model data (fetch blob if URL is external)
+    // ── Fetch a URL and return { b64, mime, size } or null on failure ────────
+    _fetchAsB64: async (url, arrayBufferToBase64) => {
+      try {
+        const res  = await fetch(url, { mode: 'cors' })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const buf  = await res.arrayBuffer()
+        const ext  = url.split('?')[0].split('.').pop().toLowerCase()
+        const mime = ext === 'glb' ? 'model/gltf-binary' :
+                     ext === 'gltf' ? 'model/gltf+json' :
+                     'application/octet-stream'
+        return { b64: arrayBufferToBase64(buf), mime, size: buf.byteLength }
+      } catch(e) {
+        console.warn('[Bundle] fetch failed for', url, e.message)
+        return null
+      }
+    },
+
+    // ── Export full bundle — safely embeds model GLBs as base64 ─────────────
+    exportProjectBundle: async (onProgress, embedOptions = {}) => {
+      const s   = get()
+      const a2b = get()._arrayBufferToBase64
+      const fb  = get()._fetchAsB64
+      onProgress?.('Preparing…', 2)
+
       const modelEntries = []
+      let   totalBytes   = 0
+
       for (let i = 0; i < s.models.length; i++) {
-        const m = s.models[i]
-        onProgress?.(`Packing model ${i+1}/${s.models.length}: ${m.name}`, Math.round((i/s.models.length)*60))
-        let modelData = { ...m }
-        // Try to fetch and embed blob for local/external URLs
-        if (m.url && !m.url.startsWith('data:')) {
-          try {
-            const res  = await fetch(m.url)
-            const buf  = await res.arrayBuffer()
-            const b64  = btoa(String.fromCharCode(...new Uint8Array(buf)))
-            const ext  = m.url.split('.').pop().split('?')[0].toLowerCase()
-            const mime = ext === 'glb' ? 'model/gltf-binary' : 'model/gltf+json'
-            modelData.embeddedBlob = `data:${mime};base64,${b64}`
-          } catch(e) {
-            console.warn(`Could not fetch model ${m.name}:`, e)
-            // Keep original URL as fallback
-          }
+        const m      = s.models[i]
+        const pct    = 5 + Math.round((i / s.models.length) * 70)
+        const skip   = embedOptions.skip?.includes(m.id)
+        onProgress?.(`${skip?'Skipping':'Packing'} model ${i+1}/${s.models.length}: ${m.name}`, pct)
+
+        const entry = {
+          id:m.id, url:m.url, name:m.name,
+          position:m.position, rotation:m.rotation, scale:m.scale,
+          visible:m.visible, activeAnimation:m.activeAnimation,
+          animationSpeed:m.animationSpeed, animationPlaying:m.animationPlaying,
+          materialOverride:m.materialOverride,
+          castShadow:m.castShadow, receiveShadow:m.receiveShadow,
         }
-        modelEntries.push(modelData)
+
+        if (!skip && m.url && !m.url.startsWith('data:')) {
+          const fetched = await fb(m.url, a2b)
+          if (fetched) {
+            entry.embeddedBlob = `data:${fetched.mime};base64,${fetched.b64}`
+            entry.embeddedSize = fetched.size
+            totalBytes += fetched.size
+          } else {
+            entry.embedError = 'fetch_failed'
+          }
+        } else if (m.url?.startsWith('data:')) {
+          // Already a data URL (local file upload) — keep as-is
+          entry.embeddedBlob = m.url
+        }
+        modelEntries.push(entry)
       }
 
-      onProgress?.('Writing bundle…', 85)
+      onProgress?.('Building bundle JSON…', 80)
       const bundle = {
-        version:        3,
+        version:        4,
+        appVersion:     'GLB Studio 2.0',
         bundleDate:     new Date().toISOString(),
         projectName:    s.projectName,
         models:         modelEntries,
@@ -418,61 +460,134 @@ const useStore = create(
         physicsEnabled: s.physicsEnabled,
         gravity:        s.gravity,
         modelPhysics:   s.modelPhysics,
+        stats: {
+          modelCount:    modelEntries.length,
+          keyframeCount: Object.keys(s.keyframes).length,
+          cameraCount:   s.cameras.length,
+          embeddedModels:modelEntries.filter(m=>m.embeddedBlob).length,
+          embeddedBytes: totalBytes,
+        }
       }
 
-      onProgress?.('Saving file…', 95)
-      const json = JSON.stringify(bundle)
-      const blob = new Blob([json], { type:'application/json' })
-      const url  = URL.createObjectURL(blob)
-      const a    = document.createElement('a')
-      const safeName = s.projectName.replace(/[^a-z0-9_-]/gi,'_')
-      a.href=url; a.download=`${safeName}_bundle.glbstudio`; a.click()
-      URL.revokeObjectURL(url)
+      onProgress?.('Saving file…', 92)
+      const json     = JSON.stringify(bundle)
+      const fileBlob = new Blob([json], { type:'application/json' })
+      const fileUrl  = URL.createObjectURL(fileBlob)
+      const a        = document.createElement('a')
+      const safeName = s.projectName.replace(/[^a-z0-9_\-]/gi,'_') || 'project'
+      a.href = fileUrl
+      a.download = `${safeName}_bundle.glbstudio`
+      document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(fileUrl), 5000)
       onProgress?.('Done!', 100)
-      return { models: modelEntries.length, size: blob.size }
+
+      // Save to recent projects in localStorage
+      try {
+        const recent = JSON.parse(localStorage.getItem('glb_recent') || '[]')
+        const entry  = { name:s.projectName, date:new Date().toISOString(), type:'bundle', models:modelEntries.length }
+        localStorage.setItem('glb_recent', JSON.stringify([entry, ...recent.slice(0,9)]))
+      } catch {}
+
+      return {
+        modelCount:    modelEntries.length,
+        embeddedCount: modelEntries.filter(m=>m.embeddedBlob).length,
+        failedCount:   modelEntries.filter(m=>m.embedError).length,
+        size:          fileBlob.size,
+      }
     },
 
-    importProjectJSON: (file) => new Promise((resolve) => {
+    // ── Parse a .glbstudio file — returns preview WITHOUT loading ────────────
+    previewBundle: (file) => new Promise((resolve) => {
       const reader = new FileReader()
       reader.onload = e => {
         try {
           const data = JSON.parse(e.target.result)
-          // Handle embedded blobs (v3 bundle): use blob URL from embedded data
-          const models = (data.models || []).map(m => {
-            if (m.embeddedBlob) {
-              // Convert embedded base64 back to object URL
-              const [header, b64] = m.embeddedBlob.split(',')
-              const mime = header.match(/data:([^;]+)/)?.[1] || 'model/gltf-binary'
-              const binary = atob(b64)
-              const bytes  = new Uint8Array(binary.length)
-              for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i)
-              const blob = new Blob([bytes], { type: mime })
-              return { ...m, url: URL.createObjectURL(blob), embeddedBlob: undefined }
-            }
-            return m
+          resolve({
+            ok:             true,
+            projectName:    data.projectName   || 'Unknown',
+            version:        data.version       || 1,
+            bundleDate:     data.bundleDate    || null,
+            modelCount:     (data.models || []).length,
+            keyframeCount:  Object.keys(data.keyframes || {}).length,
+            cameraCount:    (data.cameras || []).length,
+            totalFrames:    data.totalFrames   || 0,
+            fps:            data.fps           || 30,
+            lightingPreset: data.lightingPreset|| 'studio',
+            embeddedModels: (data.models || []).filter(m=>m.embeddedBlob).length,
+            models:         (data.models || []).map(m=>({ id:m.id, name:m.name, hasBlob:!!m.embeddedBlob })),
+            stats:          data.stats || null,
+            _raw:           data,   // keep for actual load
           })
-          set(state => {
-            state.projectName    = data.projectName    || 'Imported'
-            state.models         = models
-            state.keyframes      = data.keyframes      || {}
-            state.cameras        = data.cameras        || [{ id:'cam_1',name:'Camera 1',position:[5,3,5],target:[0,0,0],fov:50,near:0.01,far:1000 }]
-            state.totalFrames    = data.totalFrames    || 300
-            state.fps            = data.fps            || 30
-            state.loopPlayback   = data.loopPlayback   || false
-            state.lightingPreset = data.lightingPreset || 'studio'
-            state.skybox         = data.skybox         || { type:'preset', value:null, bgColor:'#080810', showBg:false }
-            state.physicsEnabled = data.physicsEnabled || false
-            state.gravity        = data.gravity        ?? -9.82
-            state.modelPhysics   = data.modelPhysics   || {}
-            state.selectedModelId = null
-            state.undoStack      = []
-            state.redoStack      = []
-          })
-          resolve({ ok: true, modelCount: models.length, hasBlobs: models.some(m=>m.url?.startsWith('blob:')) })
         } catch(err) { resolve({ ok:false, error: err.message }) }
       }
       reader.readAsText(file)
     }),
+
+    // ── Load a bundle that was already parsed by previewBundle ───────────────
+    loadBundle: (parsedData) => {
+      const data   = parsedData._raw || parsedData
+      const a2blob = (dataUrl) => {
+        if (!dataUrl) return null
+        try {
+          const [header, b64] = dataUrl.split(',')
+          const mime   = header.match(/data:([^;]+)/)?.[1] || 'model/gltf-binary'
+          const binary = atob(b64)
+          const bytes  = new Uint8Array(binary.length)
+          for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i)
+          return URL.createObjectURL(new Blob([bytes], { type: mime }))
+        } catch { return null }
+      }
+
+      const models = (data.models || []).map(m => {
+        const blobUrl = m.embeddedBlob ? a2blob(m.embeddedBlob) : null
+        return { ...m, url: blobUrl || m.url, embeddedBlob: undefined, embeddedSize: undefined, embedError: undefined }
+      })
+
+      set(state => {
+        state.projectName    = data.projectName    || 'Imported'
+        state.models         = models
+        state.keyframes      = data.keyframes      || {}
+        state.cameras        = data.cameras?.length ? data.cameras : [{ id:'cam_1',name:'Camera 1',position:[5,3,5],target:[0,0,0],fov:50,near:0.01,far:1000 }]
+        state.totalFrames    = data.totalFrames    || 300
+        state.fps            = data.fps            || 30
+        state.loopPlayback   = data.loopPlayback   || false
+        state.lightingPreset = data.lightingPreset || 'studio'
+        state.skybox         = data.skybox         || { type:'preset', value:null, bgColor:'#080810', showBg:false }
+        state.physicsEnabled = data.physicsEnabled || false
+        state.gravity        = data.gravity        ?? -9.82
+        state.modelPhysics   = data.modelPhysics   || {}
+        state.selectedModelId = null
+        state.undoStack      = []
+        state.redoStack      = []
+      })
+
+      // Track recent
+      try {
+        const recent = JSON.parse(localStorage.getItem('glb_recent') || '[]')
+        const entry  = { name:data.projectName, date:new Date().toISOString(), type: models.some(m=>m.url?.startsWith('blob:'))?'bundle':'url', models:models.length }
+        localStorage.setItem('glb_recent', JSON.stringify([entry, ...recent.slice(0,9)]))
+      } catch {}
+
+      return { ok:true, modelCount:models.length, embeddedCount:models.filter(m=>m.url?.startsWith('blob:')).length }
+    },
+
+    // ── importProjectJSON: convenience wrapper (preview + load) ─────────────
+    importProjectJSON: (file) => new Promise(async (resolve) => {
+      const store = get()
+      const preview = await store.previewBundle(file)
+      if (!preview.ok) { resolve({ ok:false, error: preview.error }); return }
+      const result = store.loadBundle(preview)
+      resolve(result)
+    }),
+
+    // ── Recent projects (from localStorage) ─────────────────────────────────
+    getRecentProjects: () => {
+      try { return JSON.parse(localStorage.getItem('glb_recent') || '[]') }
+      catch { return [] }
+    },
+    clearRecentProjects: () => {
+      try { localStorage.removeItem('glb_recent') } catch {}
+    },
 
     // ── Helpers ────────────────────────────────────────────────────────
     getSelectedModel: () => {
