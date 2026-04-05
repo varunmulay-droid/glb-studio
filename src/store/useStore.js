@@ -214,8 +214,12 @@ const useStore = create(
     updateCamera: (id, props) => set(state => ({
       cameras: state.cameras.map(c => c.id === id ? { ...c, ...props } : c)
     })),
-    setActiveCameraId: (id) => set(() => ({ activeCameraId: id })),
-    setInCameraView:   (v)  => set(() => ({ inCameraView:   v })),
+    setActiveCameraId:    (id) => set(() => ({ activeCameraId:    id })),
+    setInCameraView:      (v)  => set(() => ({ inCameraView:      v })),
+    selectedCameraId:     null,   // camera with transform gizmo showing
+    cameraTransformMode:  'translate', // translate | rotate
+    selectCamera:         (id) => set(() => ({ selectedCameraId:    id })),
+    setCameraTransformMode:(m) => set(() => ({ cameraTransformMode: m })),
 
     // ── Recording / Export ─────────────────────────────────────────────
     recordedFrames:  [],

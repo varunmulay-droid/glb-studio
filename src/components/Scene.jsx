@@ -180,19 +180,25 @@ function Playback() {
 
 // ── Camera markers (hidden in render mode) ───────────────────────────────────
 function CameraMarkers() {
-  const cameras     = useStore(s => s.cameras) || []
-  const activeCamId = useStore(s => s.activeCameraId)
-  const isRender    = useStore(s => s.isRenderMode || s.isExporting)
-  const showCams    = useStore(s => s.showCameraObjects)
+  const cameras        = useStore(s => s.cameras) || []
+  const activeCamId    = useStore(s => s.activeCameraId)
+  const selectedCamId  = useStore(s => s.selectedCameraId)
+  const isRender       = useStore(s => s.isRenderMode || s.isExporting)
+  const showCams       = useStore(s => s.showCameraObjects)
   if (isRender || !showCams) return null
   return (
     <>
       {cameras.map(cam => {
         const pos   = cam.position || [0,2,5]
         const isAct = cam.id === activeCamId
+        const isSel = cam.id === selectedCamId
         return (
           <group key={cam.id} position={pos}
-            onClick={e => { e.stopPropagation(); useStore.getState().setActiveCameraId(cam.id) }}>
+            onClick={e => {
+              e.stopPropagation()
+              useStore.getState().setActiveCameraId(cam.id)
+              useStore.getState().selectCamera(cam.id)
+            }}>
             <mesh>
               <boxGeometry args={[0.25,0.18,0.32]} />
               <meshStandardMaterial color={isAct?'#4f8eff':'#666'}
@@ -208,6 +214,13 @@ function CameraMarkers() {
               <mesh position={[0,0,-0.5]} rotation={[Math.PI/2,0,0]}>
                 <coneGeometry args={[0.45,0.9,4,1,true]} />
                 <meshBasicMaterial color="#4f8eff" wireframe transparent opacity={0.2} />
+              </mesh>
+            )}
+            {isSel && (
+              <mesh rotation={[-Math.PI/2,0,0]}>
+                <ringGeometry args={[0.35,0.45,32]} />
+                <meshBasicMaterial color="#4f8eff" transparent opacity={0.8}
+                  side={THREE.DoubleSide} depthWrite={false} />
               </mesh>
             )}
           </group>
@@ -377,6 +390,61 @@ function RenderIndicator() {
   )
 }
 
+// ── Camera transform gizmo ────────────────────────────────────────────────────
+// Allows Move / Rotate on camera objects directly in the 3D viewport
+function CameraTransformGizmo() {
+  const selectedCameraId    = useStore(s => s.selectedCameraId)
+  const cameraTransformMode = useStore(s => s.cameraTransformMode) || 'translate'
+  const inView              = useStore(s => s.inCameraView)
+  const isRender            = useStore(s => s.isRenderMode || s.isExporting)
+  const camRefs             = useRef({})  // { [camId]: THREE.Object3D }
+
+  // We can't use TransformControls on cameras in the scene normally,
+  // so we maintain invisible proxy objects at camera positions
+  const cameras = useStore(s => s.cameras) || []
+  const updateCamera = useStore(s => s.updateCamera)
+
+  const selCam = cameras.find(c => c.id === selectedCameraId)
+
+  if (!selCam || inView || isRender) return null
+
+  return (
+    <group
+      position={selCam.position || [0,2,5]}
+      ref={el => { if (el) camRefs.current[selectedCameraId] = el }}
+      onUpdate={self => {
+        // Sync proxy group position back to store
+        const p = self.position
+        updateCamera(selectedCameraId, { position:[p.x, p.y, p.z] })
+      }}
+    >
+      {camRefs.current[selectedCameraId] && (
+        <TransformControls
+          key={`cam-tc-${selectedCameraId}`}
+          object={camRefs.current[selectedCameraId]}
+          mode={cameraTransformMode}
+          size={0.7}
+          onChange={() => {
+            const obj = camRefs.current[selectedCameraId]
+            if (!obj) return
+            const p = obj.position
+            if (cameraTransformMode === 'translate') {
+              updateCamera(selectedCameraId, { position:[p.x, p.y, p.z] })
+            } else if (cameraTransformMode === 'rotate') {
+              // Compute new look-at target from rotation
+              const dir = new THREE.Vector3(0, 0, -1)
+                .applyQuaternion(obj.quaternion)
+                .multiplyScalar(5)
+                .add(p)
+              updateCamera(selectedCameraId, { target:[dir.x, dir.y, dir.z] })
+            }
+          }}
+        />
+      )}
+    </group>
+  )
+}
+
 // ── Main Scene ─────────────────────────────────────────────────────────────────
 export default function Scene({ canvasRef }) {
   return (
@@ -403,6 +471,7 @@ export default function Scene({ canvasRef }) {
           <Deselect />
           <ModelManager />
           <CameraMarkers />
+          <CameraTransformGizmo />
           <CamSync />
           <FlyControls />
           <Playback />

@@ -89,6 +89,8 @@ function CameraCard({ cam, isActive, isInView }) {
   const {
     setActiveCameraId, setInCameraView, updateCamera, removeCamera, cameras,
     currentFrame, inCameraView, activeCameraId,
+    selectedCameraId, selectCamera,
+    cameraTransformMode, setCameraTransformMode,
   } = useStore()
   const [expanded, setExpanded] = useState(isActive)
   const [renaming, setRenaming] = useState(false)
@@ -219,6 +221,37 @@ function CameraCard({ cam, isActive, isInView }) {
             onMouseLeave={e=>e.currentTarget.style.color='var(--text3)'}
             title="Delete camera"
           >✕</button>
+        )}
+      </div>
+
+      {/* ── Transform mode selector ── */}
+      <div style={{ padding:'0 10px 6px', display:'flex', gap:5, alignItems:'center' }}>
+        <span style={{ fontSize:10, color:'var(--text3)', flexShrink:0 }}>Transform:</span>
+        {[['⊹','translate','Move'],['↻','rotate','Rotate']].map(([icon,mode,label])=>(
+          <button key={mode}
+            onClick={()=>{ selectCamera(cam.id); setCameraTransformMode(mode) }}
+            title={label}
+            style={{
+              padding:'4px 9px', borderRadius:'var(--radius-sm)', fontSize:12,
+              cursor:'pointer', transition:'all 0.12s',
+              background: selectedCameraId===cam.id && cameraTransformMode===mode
+                ? 'rgba(79,142,255,0.18)' : 'var(--bg3)',
+              border:`1px solid ${selectedCameraId===cam.id && cameraTransformMode===mode
+                ? 'rgba(79,142,255,0.45)' : 'var(--border)'}`,
+              color: selectedCameraId===cam.id && cameraTransformMode===mode
+                ? 'var(--accent)' : 'var(--text2)',
+              fontWeight: selectedCameraId===cam.id && cameraTransformMode===mode ? 700 : 400,
+            }}>
+            {icon} {label}
+          </button>
+        ))}
+        {selectedCameraId===cam.id && (
+          <button onClick={()=>selectCamera(null)}
+            style={{ padding:'4px 7px', borderRadius:'var(--radius-sm)', fontSize:10,
+              cursor:'pointer', background:'transparent', border:'1px solid var(--border)',
+              color:'var(--text3)' }}>
+            ✕
+          </button>
         )}
       </div>
 
@@ -381,7 +414,8 @@ function CameraCard({ cam, isActive, isInView }) {
 
 // ── Main Panel ─────────────────────────────────────────────────────────────────
 export default function CameraMode() {
-  const { cameras, activeCameraId, inCameraView, addCamera, setActiveCameraId, setInCameraView } = useStore()
+  const { cameras, activeCameraId, inCameraView, addCamera, setActiveCameraId, setInCameraView,
+    selectedCameraId, selectCamera, cameraTransformMode, setCameraTransformMode } = useStore()
 
   const addNewCamera = () => {
     const id  = UID()

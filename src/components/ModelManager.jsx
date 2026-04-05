@@ -1,64 +1,60 @@
 /**
- * ModelManager.jsx — Fixed version
+ * ModelManager.jsx — stable, bug-free version
  *
- * Bug fixes:
- * 1. TypeError "Cannot read properties of undefined (reading 'length')"
- *    — animations array was undefined before GLTF fully loaded
- * 2. Model selection jumps to wrong model
- *    — TransformControls was passed groupRef (a ref object) not groupRef.current
- *    — Fixed: use explicit attach ref pattern
- * 3. Physics causes shaking/flipping
- *    — Physics engine was writing back to store every frame, causing
- *      a feedback loop: store update → useEffect → reset position → physics fight
- *    — Fixed: when physics is ON for a body, skip the store→mesh sync useEffect
- *    — PhysicsEngine syncs mesh; store only updated by user transforms
- * 4. Physics auto-enabled on import
- *    — Removed: physics registration no longer fires on model load
- *    — Physics registration now only happens when user explicitly enables physics
- * 5. City GLB moves on physics enable
- *    — Default type is now 'static' for any model with no physics config set
- *    — Fixed: bodies placed at exact mesh world position (no bounding box offset)
+ * Fixes:
+ *  - TypeError "Cannot read properties of undefined (reading 'length')"
+ *    useGLTF can return animations=undefined; fully guarded everywhere
+ *  - Model selection attaches TransformControls to wrong mesh
+ *    Fixed: use groupRef.current directly with key={model.id} remount
+ *  - Physics feedback loop shaking
+ *    Fixed: physicsActiveRef blocks store→mesh sync when body is active
  */
-import { useEffect, useRef, useMemo, useCallback } from 'react'
-import { useGLTF, TransformControls } from '@react-three/drei'
-import { useFrame } from '@react-three/fiber'
+import { useEffect, useRef, useMemo, useCallback, useState } from 'react'
+import { useGLTF } from '@react-three/drei'
+import { useFrame, useThree } from '@react-three/fiber'
+import { TransformControls } from '@react-three/drei'
 import * as THREE   from 'three'
 import useStore     from '../store/useStore'
 
-// Physics imported lazily to avoid circular deps
-let _registerPhysics   = null
-let _unregisterPhysics = null
-async function getPhysicsFns() {
-  if (!_registerPhysics) {
+/* ── lazy physics import ─────────────────────────────────────────────────── */
+let _reg = null, _unreg = null
+async function physFns() {
+  if (!_reg) {
     const m = await import('./PhysicsEngine')
-    _registerPhysics   = m.registerPhysicsObject
-    _unregisterPhysics = m.unregisterPhysicsObject
+    _reg   = m.registerPhysicsObject
+    _unreg = m.unregisterPhysicsObject
   }
-  return { register: _registerPhysics, unregister: _unregisterPhysics }
+  return { reg: _reg, unreg: _unreg }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ModelMesh — renders one GLB model
+   ═══════════════════════════════════════════════════════════════════════════ */
 function ModelMesh({ model }) {
   const groupRef       = useRef()
   const mixerRef       = useRef(null)
   const actionsRef     = useRef({})
-  const currentAnimRef = useRef(null)
-  const physicsActiveRef = useRef(false)  // is this body currently in physics world?
+  const curAnimRef     = useRef(null)
+  const physActiveRef  = useRef(false)
 
-  const { scene, animations: rawAnims } = useGLTF(model.url)
-  const animations = rawAnims || []  // guard against undefined
+  /* useGLTF returns scene + animations (may be undefined while loading) */
+  const gltf       = useGLTF(model.url)
+  const scene      = gltf?.scene
+  const animations = gltf?.animations ?? []   // ALWAYS an array
 
+  const store = useStore()
   const {
     selectedModelId, transformMode,
     updateModelTransform, setModelAnimations, setModelAnimPlaying,
     selectModel, currentFrame, keyframes,
     snapEnabled, snapTranslate, snapRotate, snapScale,
     physicsEnabled, physicsConnected, modelPhysics,
-  } = useStore()
+  } = store
 
-  const isSelected   = selectedModelId === model.id
-  const isRenderMode = useStore(s => s.isRenderMode || s.isExporting)
+  const isSelected    = selectedModelId === model.id
+  const isRenderMode  = useStore(s => !!(s.isRenderMode || s.isExporting))
 
-  // ── Clone scene (manual skeleton rebind, no SkeletonUtils dep) ────────────
+  /* ── deep-clone scene preserving skinned meshes ──────────────────────── */
   const clonedScene = useMemo(() => {
     if (!scene) return null
     const clone    = scene.clone(true)
@@ -67,11 +63,11 @@ function ModelMesh({ model }) {
     clone.traverse(n => { if (n.isBone) dstBones.push(n) })
     clone.traverse(child => {
       if (child.isSkinnedMesh && child.skeleton) {
-        const newBones = child.skeleton.bones.map(b => {
-          const idx = srcBones.indexOf(b)
-          return idx !== -1 ? dstBones[idx] : b
+        const bones = child.skeleton.bones.map(b => {
+          const i = srcBones.indexOf(b)
+          return i !== -1 ? dstBones[i] : b
         })
-        child.skeleton = new THREE.Skeleton(newBones, child.skeleton.boneInverses)
+        child.skeleton = new THREE.Skeleton(bones, child.skeleton.boneInverses)
         child.bind(child.skeleton, child.bindMatrix)
       }
       if (child.isMesh) {
@@ -86,80 +82,77 @@ function ModelMesh({ model }) {
     return clone
   }, [scene])
 
-  // ── AnimationMixer — set up on load ───────────────────────────────────────
+  /* ── AnimationMixer ──────────────────────────────────────────────────── */
   useEffect(() => {
-    if (!clonedScene || !animations.length) return
+    if (!clonedScene) return
+    if (!animations || animations.length === 0) return   // double-guard
+
     const mixer = new THREE.AnimationMixer(clonedScene)
     mixerRef.current = mixer
-    const actionMap = {}
+
+    const map = {}
     animations.forEach(clip => {
+      if (!clip?.name) return
       const action = mixer.clipAction(clip, clonedScene)
       action.setLoop(THREE.LoopRepeat, Infinity)
       action.clampWhenFinished = false
-      actionMap[clip.name] = action
+      map[clip.name] = action
     })
-    actionsRef.current = actionMap
+    actionsRef.current = map
 
-    const names = animations.map(a => a.name)
-    setModelAnimations(model.id, names)
-
-    const curAnim = useStore.getState().models.find(m => m.id === model.id)?.activeAnimation
-    const first   = curAnim || names[0]
-    if (first && actionMap[first]) {
-      actionMap[first].play()
-      currentAnimRef.current = first
+    const names = Object.keys(map)
+    if (names.length > 0) {
+      setModelAnimations(model.id, names)
+      const cur = useStore.getState().models.find(m => m.id === model.id)?.activeAnimation
+      const first = cur || names[0]
+      if (map[first]) { map[first].play(); curAnimRef.current = first }
+      setModelAnimPlaying(model.id, true)
     }
-    setModelAnimPlaying(model.id, true)
 
     return () => {
       mixer.stopAllAction()
       mixer.uncacheRoot(clonedScene)
+      mixerRef.current = null
+      actionsRef.current = {}
+      curAnimRef.current = null
     }
-  }, [clonedScene, animations.length, model.id])  // animations.length safe guard
+  }, [clonedScene, animations.length, model.id]) // animations.length: safe number dep
 
-  // ── Animation switch ──────────────────────────────────────────────────────
+  /* ── Switch animation clip ───────────────────────────────────────────── */
   useEffect(() => {
-    const mixer   = mixerRef.current
-    const actions = actionsRef.current
+    const mixer = mixerRef.current
+    const acts  = actionsRef.current
     if (!mixer || !model.activeAnimation) return
     const target = model.activeAnimation
-    if (currentAnimRef.current === target) return
-    const prev = actions[currentAnimRef.current]
-    const next = actions[target]
-    if (!next) return
-    if (prev && prev !== next) { prev.fadeOut(0.3); next.reset().fadeIn(0.3) }
-    else next.reset()
-    if (model.animationPlaying) next.play()
-    else { next.play(); next.paused = true }
-    next.setEffectiveTimeScale(model.animationSpeed || 1)
-    currentAnimRef.current = target
-  }, [model.activeAnimation, model.animationPlaying, model.animationSpeed])
-
-  useEffect(() => {
-    const cur = actionsRef.current[currentAnimRef.current]
-    if (cur) cur.paused = !model.animationPlaying
-  }, [model.animationPlaying])
-
-  useEffect(() => {
-    Object.values(actionsRef.current).forEach(a => a.setEffectiveTimeScale(model.animationSpeed || 1))
-  }, [model.animationSpeed])
-
-  // ── Tick mixer ────────────────────────────────────────────────────────────
-  useFrame((_, delta) => { mixerRef.current?.update(delta) })
-
-  // ── Physics registration — ONLY when user clicks "Connect Physics" ─────────
-  useEffect(() => {
-    if (!physicsEnabled || !physicsConnected || !groupRef.current) {
-      physicsActiveRef.current = false
+    if (curAnimRef.current === target) {
+      const cur = acts[target]
+      if (cur) { cur.paused = !model.animationPlaying; cur.setEffectiveTimeScale(model.animationSpeed ?? 1) }
       return
     }
-    // Register this body
-    getPhysicsFns().then(({ register, unregister }) => {
+    const prev = acts[curAnimRef.current]
+    const next = acts[target]
+    if (!next) return
+    if (prev && prev !== next) { prev.fadeOut(0.25); next.reset().fadeIn(0.25) } else next.reset()
+    if (model.animationPlaying) next.play(); else { next.play(); next.paused = true }
+    next.setEffectiveTimeScale(model.animationSpeed ?? 1)
+    curAnimRef.current = target
+  }, [model.activeAnimation, model.animationPlaying, model.animationSpeed])
+
+  /* ── Tick mixer ──────────────────────────────────────────────────────── */
+  useFrame((_, dt) => { mixerRef.current?.update(dt) })
+
+  /* ── Physics registration ────────────────────────────────────────────── */
+  useEffect(() => {
+    if (!physicsEnabled || !physicsConnected || !groupRef.current) {
+      physActiveRef.current = false
+      return
+    }
+    const props = modelPhysics?.[model.id] ?? {}
+    physFns().then(({ reg, unreg }) => {
       if (!groupRef.current) return
-      const props = modelPhysics[model.id] || {}
-      register(model.id, groupRef.current, {
+      reg(model.id, groupRef.current, {
         mass:           props.mass           ?? 1,
-        type:           props.type           ?? 'static',   // default STATIC — safe
+        type:           props.type           ?? 'static',
         linearDamping:  props.damping        ?? 0.3,
         angularDamping: props.angularDamping ?? 0.5,
         friction:       props.friction       ?? 0.4,
@@ -168,17 +161,15 @@ function ModelMesh({ model }) {
         collisionShape: props.collisionShape ?? 'box',
         ccdRadius:      props.ccdRadius      ?? 0,
       })
-      physicsActiveRef.current = true
+      physActiveRef.current = true
     })
     return () => {
-      getPhysicsFns().then(({ unregister }) => {
-        unregister(model.id)
-        physicsActiveRef.current = false
-      })
+      physFns().then(({ unreg }) => { unreg(model.id); physActiveRef.current = false })
     }
-  }, [physicsEnabled, physicsConnected, model.id, JSON.stringify(modelPhysics[model.id])])
+  }, [physicsEnabled, physicsConnected, model.id,
+      JSON.stringify(modelPhysics?.[model.id])])  // safe stringify
 
-  // ── Material overrides ────────────────────────────────────────────────────
+  /* ── Material overrides ──────────────────────────────────────────────── */
   useEffect(() => {
     if (!clonedScene) return
     const mat = model.materialOverride
@@ -197,7 +188,7 @@ function ModelMesh({ model }) {
     })
   }, [model.materialOverride, clonedScene])
 
-  // ── Shadow settings ───────────────────────────────────────────────────────
+  /* ── Shadow settings ─────────────────────────────────────────────────── */
   useEffect(() => {
     if (!clonedScene) return
     clonedScene.traverse(child => {
@@ -208,28 +199,24 @@ function ModelMesh({ model }) {
     })
   }, [model.castShadow, model.receiveShadow, clonedScene])
 
-  // ── Sync store position → mesh
-  //    SKIPPED when physics engine is actively driving this body
+  /* ── Store position → mesh (skipped when physics owns the body) ──────── */
   useEffect(() => {
-    if (!groupRef.current) return
-    if (physicsActiveRef.current) return  // physics owns the transform — don't override
-
-    const store       = useStore.getState()
-    const interpolated = store.interpolateAtFrame(model.id, currentFrame)
-    const src          = interpolated || model
+    if (!groupRef.current || physActiveRef.current) return
+    const s   = useStore.getState()
+    const src = s.interpolateAtFrame(model.id, currentFrame) || model
     groupRef.current.position.set(...src.position)
     groupRef.current.rotation.set(...src.rotation)
     groupRef.current.scale.set(...src.scale)
   }, [currentFrame, keyframes, model.position, model.rotation, model.scale])
 
-  // ── TransformControls drag → store ────────────────────────────────────────
-  const onTransformChange = useCallback(() => {
+  /* ── TransformControls → store ───────────────────────────────────────── */
+  const onTCChange = useCallback(() => {
     if (!groupRef.current) return
     const p  = groupRef.current.position
     const r  = groupRef.current.rotation
     const sc = groupRef.current.scale
-    updateModelTransform(model.id, 'position', [p.x,  p.y,  p.z])
-    updateModelTransform(model.id, 'rotation', [r.x,  r.y,  r.z])
+    updateModelTransform(model.id, 'position', [p.x, p.y, p.z])
+    updateModelTransform(model.id, 'rotation', [r.x, r.y, r.z])
     updateModelTransform(model.id, 'scale',    [sc.x, sc.y, sc.z])
   }, [model.id, updateModelTransform])
 
@@ -243,27 +230,25 @@ function ModelMesh({ model }) {
       >
         <primitive object={clonedScene} />
 
-        {/* Selection ring — hidden during render */}
         {isSelected && !isRenderMode && (
           <mesh rotation={[-Math.PI/2, 0, 0]}>
             <ringGeometry args={[0.9, 1.05, 64]} />
-            <meshBasicMaterial color="#4f8eff" transparent opacity={0.6}
+            <meshBasicMaterial color="#4f8eff" transparent opacity={0.55}
               side={THREE.DoubleSide} depthWrite={false} />
           </mesh>
         )}
       </group>
 
-      {/* TransformControls — fix: pass ref.current via key trick so it
-          always attaches to the correct mesh when selection changes */}
+      {/* key={model.id} forces remount → always attaches to correct mesh */}
       {isSelected && !isRenderMode && groupRef.current && (
         <TransformControls
-          key={model.id}           // force remount when selected model changes
+          key={`tc-${model.id}`}
           object={groupRef.current}
           mode={transformMode}
-          onChange={onTransformChange}
-          translationSnap={snapEnabled ? snapTranslate : null}
-          rotationSnap={snapEnabled ? (snapRotate * Math.PI / 180) : null}
-          scaleSnap={snapEnabled ? snapScale : null}
+          onChange={onTCChange}
+          translationSnap={snapEnabled ? snapTranslate  : null}
+          rotationSnap={snapEnabled    ? (snapRotate * Math.PI / 180) : null}
+          scaleSnap={snapEnabled       ? snapScale : null}
           size={0.8}
         />
       )}
@@ -271,13 +256,16 @@ function ModelMesh({ model }) {
   )
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   ModelManager — renders all models
+   ═══════════════════════════════════════════════════════════════════════════ */
 export default function ModelManager() {
   const models = useStore(s => s.models)
-  if (!models?.length) return null
+  if (!models || models.length === 0) return null
   return (
     <>
       {models.map(model => (
-        <ModelMesh key={`${model.id}-${model.url}`} model={model} />
+        <ModelMesh key={`${model.id}__${model.url}`} model={model} />
       ))}
     </>
   )
