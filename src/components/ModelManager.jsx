@@ -52,7 +52,7 @@ function ModelMesh({ model }) {
     updateModelTransform, setModelAnimations, setModelAnimPlaying,
     selectModel, currentFrame, keyframes,
     snapEnabled, snapTranslate, snapRotate, snapScale,
-    physicsEnabled, modelPhysics,
+    physicsEnabled, physicsConnected, modelPhysics,
   } = useStore()
 
   const isSelected   = selectedModelId === model.id
@@ -147,9 +147,9 @@ function ModelMesh({ model }) {
   // ── Tick mixer ────────────────────────────────────────────────────────────
   useFrame((_, delta) => { mixerRef.current?.update(delta) })
 
-  // ── Physics registration — ONLY when user explicitly enables physics ───────
+  // ── Physics registration — ONLY when user clicks "Connect Physics" ─────────
   useEffect(() => {
-    if (!physicsEnabled || !groupRef.current) {
+    if (!physicsEnabled || !physicsConnected || !groupRef.current) {
       physicsActiveRef.current = false
       return
     }
@@ -176,7 +176,7 @@ function ModelMesh({ model }) {
         physicsActiveRef.current = false
       })
     }
-  }, [physicsEnabled, model.id, JSON.stringify(modelPhysics[model.id])])
+  }, [physicsEnabled, physicsConnected, model.id, JSON.stringify(modelPhysics[model.id])])
 
   // ── Material overrides ────────────────────────────────────────────────────
   useEffect(() => {
@@ -212,7 +212,7 @@ function ModelMesh({ model }) {
   //    SKIPPED when physics engine is actively driving this body
   useEffect(() => {
     if (!groupRef.current) return
-    if (physicsActiveRef.current) return   // physics owns the transform
+    if (physicsActiveRef.current) return  // physics owns the transform — don't override
 
     const store       = useStore.getState()
     const interpolated = store.interpolateAtFrame(model.id, currentFrame)

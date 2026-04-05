@@ -328,7 +328,8 @@ function ModelPhysicsCard({ model, index, physicsEnabled }) {
 // ── Main PhysicsPanel ─────────────────────────────────────────────────────────
 export default function PhysicsPanel() {
   const {
-    physicsEnabled, setPhysicsEnabled,
+    physicsEnabled,   setPhysicsEnabled,
+    physicsConnected, setPhysicsConnected,
     gravity, setGravity,
     physicsConfig, setPhysicsConfig,
     physicsWind, setPhysicsWind,
@@ -340,36 +341,43 @@ export default function PhysicsPanel() {
   return (
     <div style={{ padding:12, display:'flex', flexDirection:'column', gap:8, overflowY:'auto' }}>
 
-      {/* Global enable */}
+      {/* ── STEP 1: Enable physics world ── */}
       <div style={{
         padding:'12px 14px', borderRadius:'var(--radius)',
-        background: physicsEnabled?'rgba(79,142,255,0.07)':'var(--bg2)',
-        border:`1px solid ${physicsEnabled?'rgba(79,142,255,0.3)':'var(--border)'}`,
+        background: physicsEnabled ? 'rgba(79,142,255,0.07)' : 'var(--bg2)',
+        border:`1px solid ${physicsEnabled ? 'rgba(79,142,255,0.3)' : 'var(--border)'}`,
         transition:'all 0.2s',
       }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: physicsEnabled?12:0 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: physicsEnabled ? 12 : 0 }}>
           <div>
-            <div style={{ fontSize:13, fontWeight:700, color:'var(--text0)' }}>Physics Engine</div>
+            <div style={{ display:'flex', alignItems:'center', gap:7 }}>
+              <span style={{ fontSize:11, fontWeight:700, color:'var(--text3)',
+                background:'var(--bg3)', borderRadius:10, padding:'1px 7px' }}>Step 1</span>
+              <span style={{ fontSize:13, fontWeight:700, color:'var(--text0)' }}>Physics Engine</span>
+            </div>
             <div style={{ fontSize:10, color:'var(--text2)', marginTop:2 }}>
-              Cannon-es · 120Hz substeps · Baumgarte stabilization
+              Cannon-es world · 120Hz substeps · gravity &amp; materials
             </div>
           </div>
-          <Toggle value={physicsEnabled} onChange={setPhysicsEnabled} />
+          <Toggle value={physicsEnabled} onChange={(v) => {
+            setPhysicsEnabled(v)
+            if (!v) setPhysicsConnected(false)  // disconnect when world turns off
+          }} />
         </div>
 
         {physicsEnabled && (
           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
             <Slider label="Gravity (m/s²)" value={gravity} min={-30} max={5} step={0.1}
               color="var(--accent)" onChange={setGravity}
-              fmt={v=>`${v.toFixed(2)}`} unit=" m/s²" />
+              fmt={v=>v.toFixed(2)} unit=" m/s²" />
             <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
               {[['🌍 Earth',-9.82],['🌙 Moon',-1.62],['♂ Mars',-3.72],['🪐 Jupiter',-24.8],['🚀 Zero G',0],['🔄 Reverse',9.82]]
                 .map(([lbl,g])=>(
                   <button key={lbl} onClick={()=>setGravity(g)} style={{
                     padding:'4px 8px', borderRadius:'var(--radius-sm)', fontSize:10,
-                    background: Math.abs(gravity-g)<0.1?'rgba(79,142,255,0.15)':'var(--bg3)',
-                    border:`1px solid ${Math.abs(gravity-g)<0.1?'rgba(79,142,255,0.4)':'var(--border)'}`,
-                    color: Math.abs(gravity-g)<0.1?'var(--accent)':'var(--text1)', cursor:'pointer',
+                    background: Math.abs(gravity-g)<0.1 ? 'rgba(79,142,255,0.15)' : 'var(--bg3)',
+                    border:`1px solid ${Math.abs(gravity-g)<0.1 ? 'rgba(79,142,255,0.4)' : 'var(--border)'}`,
+                    color: Math.abs(gravity-g)<0.1 ? 'var(--accent)' : 'var(--text1)', cursor:'pointer',
                   }}>{lbl}</button>
                 ))}
             </div>
@@ -377,7 +385,80 @@ export default function PhysicsPanel() {
         )}
       </div>
 
-      {physicsEnabled && <>
+      {/* ── STEP 2: Connect physics to models ── */}
+      <div style={{
+        padding:'12px 14px', borderRadius:'var(--radius)',
+        background: !physicsEnabled ? 'var(--bg2)' :
+                    physicsConnected ? 'rgba(6,214,160,0.07)' : 'rgba(245,158,11,0.07)',
+        border:`1px solid ${!physicsEnabled ? 'var(--border)' :
+                physicsConnected ? 'rgba(6,214,160,0.3)' : 'rgba(245,158,11,0.3)'}`,
+        opacity: physicsEnabled ? 1 : 0.4,
+        transition:'all 0.2s',
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:7, marginBottom:8 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:'var(--text3)',
+            background:'var(--bg3)', borderRadius:10, padding:'1px 7px' }}>Step 2</span>
+          <span style={{ fontSize:13, fontWeight:700, color:'var(--text0)' }}>Connect to Models</span>
+        </div>
+        <div style={{ fontSize:10, color:'var(--text2)', marginBottom:10, lineHeight:1.6 }}>
+          {physicsConnected
+            ? '🟢 Physics bodies active — models are under physics control'
+            : '⚠️ Configure model body types below, then click Connect'}
+        </div>
+
+        {physicsEnabled && !physicsConnected && (
+          <div style={{ padding:'8px 10px', borderRadius:'var(--radius-sm)',
+            background:'rgba(245,158,11,0.06)', border:'1px solid rgba(245,158,11,0.15)',
+            fontSize:10, color:'var(--warn)', marginBottom:10, lineHeight:1.7 }}>
+            💡 Before connecting:<br/>
+            • Set <b>city / ground / buildings</b> → <b>Static</b><br/>
+            • Set <b>cars / objects</b> → <b>Dynamic</b><br/>
+            • Adjust mass, friction, etc. per model<br/>
+            • Connecting moves bodies to current model positions
+          </div>
+        )}
+
+        <div style={{ display:'flex', gap:6 }}>
+          {!physicsConnected ? (
+            <button
+              disabled={!physicsEnabled || models.length === 0}
+              onClick={() => setPhysicsConnected(true)}
+              style={{
+                flex:1, padding:'10px 0', borderRadius:'var(--radius-sm)',
+                background: physicsEnabled && models.length > 0
+                  ? 'linear-gradient(135deg,rgba(6,214,160,0.2),rgba(79,142,255,0.2))'
+                  : 'var(--bg3)',
+                border:`1px solid ${physicsEnabled && models.length > 0 ? 'rgba(6,214,160,0.5)' : 'var(--border)'}`,
+                color: physicsEnabled && models.length > 0 ? 'var(--accent3)' : 'var(--text3)',
+                fontSize:12, fontWeight:700, cursor: physicsEnabled && models.length > 0 ? 'pointer' : 'not-allowed',
+                transition:'all 0.15s',
+                boxShadow: physicsEnabled && models.length > 0 ? '0 0 16px rgba(6,214,160,0.2)' : 'none',
+              }}>
+              ⚡ Connect Physics to {models.length} Model{models.length !== 1 ? 's' : ''}
+            </button>
+          ) : (
+            <button
+              onClick={() => setPhysicsConnected(false)}
+              style={{
+                flex:1, padding:'10px 0', borderRadius:'var(--radius-sm)',
+                background:'rgba(239,68,68,0.08)',
+                border:'1px solid rgba(239,68,68,0.3)',
+                color:'var(--danger)', fontSize:12, fontWeight:700, cursor:'pointer',
+              }}>
+              ⏹ Disconnect Physics
+            </button>
+          )}
+        </div>
+
+        {physicsConnected && (
+          <div style={{ marginTop:8, fontSize:10, color:'var(--accent3)', textAlign:'center' }}>
+            {models.length} bod{models.length !== 1 ? 'ies' : 'y'} active ·
+            Disconnect to reposition models normally
+          </div>
+        )}
+      </div>
+
+      {physicsEnabled && physicsConnected !== undefined && <>
 
         {/* Global material */}
         <Sec title="⚙ Global Material Properties" open={false}>

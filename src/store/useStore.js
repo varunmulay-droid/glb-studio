@@ -239,9 +239,10 @@ const useStore = create(
     setShowTimeline: (v) => set(state => { state.showTimeline = v }),
 
     // ── Physics ─────────────────────────────────────────────────────────
-    physicsEnabled: false,
-    gravity:        -9.82,
-    modelPhysics:   {},  // { [id]: { mass, damping, angularDamping, type, friction, restitution, staticFriction, centerOfMassY, collisionShape, constantForce, ccdRadius } }
+    physicsEnabled:   false,   // turns the cannon-es world ON/OFF
+    physicsConnected: false,   // whether bodies are registered to models (explicit user action)
+    gravity:          -9.82,
+    modelPhysics:     {},  // { [id]: { mass, damping, angularDamping, type, friction, restitution, staticFriction, centerOfMassY, collisionShape, constantForce, ccdRadius } }
     physicsConfig:  {
       globalFriction:    0.4,
       globalRestitution: 0.3,
@@ -249,7 +250,8 @@ const useStore = create(
     },
     physicsWind:    { x:0, y:0, z:0 },   // global wind force vector
 
-    setPhysicsEnabled: (v) => set(state => { state.physicsEnabled = v }),
+    setPhysicsEnabled:   (v) => set(state => { state.physicsEnabled   = v }),
+    setPhysicsConnected: (v) => set(state => { state.physicsConnected = v }),
     setGravity:        (v) => set(state => { state.gravity        = v }),
     setPhysicsConfig:  (c) => set(state => { state.physicsConfig  = { ...state.physicsConfig, ...c } }),
     setPhysicsWind:    (w) => set(state => { state.physicsWind    = { ...state.physicsWind,   ...w } }),
@@ -352,7 +354,8 @@ const useStore = create(
           state.fps          = data.fps          || 30
           state.lightingPreset=data.lightingPreset||'studio'
           state.skybox       = data.skybox       || { type:'preset', value:null, bgColor:'#080810', showBg:false }
-          state.physicsEnabled = false  // always OFF on load — user enables manually
+          state.physicsEnabled   = false  // always OFF on load — user enables manually
+            state.physicsConnected = false  // always disconnected on load
           state.gravity      = data.gravity      ?? -9.82
           state.modelPhysics = data.modelPhysics || {}
           state.undoStack    = []
