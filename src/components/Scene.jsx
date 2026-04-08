@@ -299,12 +299,16 @@ function FlyControls() {
   return null
 }
 
+// Orbit controls ref exposed globally so TC can disable it during drag
+export let orbitControlsRef = { current: null }
+
 function OrbitCam() {
   const inView  = useStore(s=>s.inCameraView)
   const isRend  = useStore(s=>s.isRenderMode||s.isExporting)
   if (inView||isRend) return null
   return (
     <OrbitControls
+      ref={orbitControlsRef}
       makeDefault
       enableDamping dampingFactor={0.07}
       rotateSpeed={0.8}
