@@ -192,7 +192,7 @@ export default function ModelsPanel() {
               }}>{m.name}</span>
 
               {/* Anims badge */}
-              {m.animations.length > 0 && (
+              {(m.animations?.length??0)>0 && (
                 <span style={{
                   fontSize:9, padding:'2px 5px', borderRadius:3,
                   background:'rgba(6,214,160,0.12)', color:'var(--accent3)',

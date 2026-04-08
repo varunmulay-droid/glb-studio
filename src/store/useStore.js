@@ -252,7 +252,7 @@ const useStore = create(
       globalRestitution: 0.3,
       substeps:          4,
     },
-    physicsWind:    { x:0, y:0, z:0 },   // global wind force vector
+    physicsWind: { x:0, y:0, z:0 },   // global wind force vector
 
     setPhysicsEnabled:   (v) => set(state => { state.physicsEnabled   = v }),
     setPhysicsConnected: (v) => set(state => { state.physicsConnected = v }),

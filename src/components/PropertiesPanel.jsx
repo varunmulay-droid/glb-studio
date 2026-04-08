@@ -142,8 +142,8 @@ export default function PropertiesPanel() {
     </div>
   )
 
-  const kfList   = getKeyframesForModel(model.id)
-  const hasKfNow = keyframes[currentFrame]?.[model.id]
+  const kfList   = getKeyframesForModel?.(model.id)||[]
+  const hasKfNow = keyframes?.[currentFrame]?.[model.id]
 
   return (
     <div>

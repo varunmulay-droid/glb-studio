@@ -44,7 +44,7 @@ export default function Timeline() {
     models, keyframes, currentFrame, totalFrames, fps, isPlaying,
     setCurrentFrame, setIsPlaying, addKeyframe, selectedModelId,
     showTimeline, setShowTimeline, setTotalFrames, setFps,
-    cameras, activeCameraId: activeCamId,
+    cameras=[], activeCameraId:activeCamId,
   } = useStore()
 
   const rulerRef  = useRef()

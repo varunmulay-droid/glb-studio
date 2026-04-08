@@ -136,7 +136,7 @@ function AnimBlock({ model, colorIdx }) {
 
 export default function AnimationPlayer() {
   const models = useStore(s => s.models)
-  const animated = models.filter(m => m.animations.length > 0)
+  const animated = models.filter(m => (m.animations?.length??0)>0)
 
   if (!animated.length) {
     return (
